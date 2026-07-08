@@ -261,7 +261,20 @@ def get_affect(crew_id: str, session: Session = Depends(get_session), user: dict
         select(AffectEstimate).where(AffectEstimate.crew_id == crew_id)
         .order_by(AffectEstimate.ts.desc())
     ).first()
-    return state.model_dump() if state else {"crew_id": crew_id, "arousal": 0, "valence": 0}
+    if not state:
+        return {"crew_id": crew_id, "arousal": 0, "valence": 0}
+
+    result = state.model_dump()
+    # Attach live MC-dropout uncertainty band from the current biometric sample
+    bio = _bio_cache.get(crew_id)
+    if bio:
+        from ml.affect.regressor import estimate_affect_with_uncertainty
+        unc = estimate_affect_with_uncertainty(bio)
+        result["arousal_std"] = unc.get("arousal_std")
+        result["valence_std"] = unc.get("valence_std")
+        result["confidence"] = unc.get("confidence")
+        result["method"] = unc.get("method")
+    return result
 
 
 @app.post("/crew/{crew_id}/consent")
@@ -311,22 +324,152 @@ def privacy_pause(
     return {"crew_id": crew_id, "paused_until": paused_until.isoformat()}
 
 
+# ─── Crew ↔ Zone assignment (deterministic social topology) ──────────────────
+SOCIAL_ZONES = [
+    "zone_soma_galley", "zone_soma_hearth", "zone_soma_common",
+    "zone_axon_lab_a", "zone_axon_lab_b", "zone_axon_aeroponics", "zone_axon_gallery",
+]
+
+
+def _crew_home_zone(crew_id: str) -> str:
+    """Deterministic 'primary social zone' for a crew member."""
+    try:
+        idx = int(crew_id.replace("crew", ""))
+    except ValueError:
+        idx = 1
+    return SOCIAL_ZONES[(idx - 1) % len(SOCIAL_ZONES)]
+
+
+def _latest_affect_by_crew(session: Session) -> dict:
+    """Most-recent affect estimate per crew_id."""
+    rows = session.exec(select(AffectEstimate).order_by(AffectEstimate.ts.desc())).all()
+    latest: dict = {}
+    for a in rows:
+        if a.crew_id not in latest:
+            latest[a.crew_id] = a
+    return latest
+
+
 @app.get("/crew/cohesion-heatmap")
 def cohesion_heatmap(session: Session = Depends(get_session), user: dict = Depends(require_ground)):
-    from sim.simulator import alertness_curve, mission_clock_h
+    """
+    Per-zone social cohesion, grounded in real data.
+
+    Cohesion is high when the crew sharing a zone are positively valenced AND
+    aligned (low valence spread). High spread => interpersonal friction =>
+    lower cohesion. Zones with no assigned crew report a neutral baseline.
+    """
+    import statistics
     zones = session.exec(select(Zone)).all()
+    latest = _latest_affect_by_crew(session)
+    crews = session.exec(select(Crew)).all()
+
+    # Group crew valences by their home zone
+    zone_valences: dict = {}
+    for c in crews:
+        aff = latest.get(c.crew_id)
+        if not aff:
+            continue
+        home = _crew_home_zone(c.crew_id)
+        zone_valences.setdefault(home, []).append(aff.valence)
+
     result = {}
     for zone in zones:
-        # Derive cohesion from affect estimates of crew in this zone
-        affects = session.exec(
-            select(AffectEstimate).order_by(AffectEstimate.ts.desc())
-        ).all()
-        if affects:
-            avg_valence = sum(a.valence for a in affects[:12]) / len(affects[:12])
-            result[zone.zone_id] = {"cohesion": round((avg_valence + 1) / 2, 3)}
-        else:
-            result[zone.zone_id] = {"cohesion": 0.5}
+        vals = zone_valences.get(zone.zone_id, [])
+        if not vals:
+            result[zone.zone_id] = {"cohesion": 0.5, "n_crew": 0, "mean_valence": 0.0, "spread": 0.0}
+            continue
+        mean_v = sum(vals) / len(vals)
+        spread = statistics.pstdev(vals) if len(vals) > 1 else 0.0
+        cohesion = 0.7 * ((mean_v + 1) / 2) + 0.3 * (1 - min(1.0, spread))
+        result[zone.zone_id] = {
+            "cohesion": round(max(0.0, min(1.0, cohesion)), 3),
+            "n_crew": len(vals),
+            "mean_valence": round(mean_v, 3),
+            "spread": round(spread, 3),
+        }
     return result
+
+
+@app.get("/crew/friction")
+def crew_friction(session: Session = Depends(get_session), user: dict = Depends(require_ground)):
+    """
+    Predictive interpersonal-friction model (server-side, explainable).
+
+    Pairwise risk score from four attributed drivers:
+      - combined circadian debt   (misaligned rhythms)
+      - combined sleep debt       (fatigue → shorter fuses)
+      - affect valence divergence (one up / one down)
+      - shared-zone proximity     (more contact hours)
+    Returns the top pairs with per-driver contributions so Ground can see
+    *why*, never just a number. Support tool, not a verdict.
+    """
+    import statistics
+    crews = session.exec(select(Crew)).all()
+    circ = {}
+    for c in crews:
+        cs = session.exec(
+            select(CircadianState).where(CircadianState.crew_id == c.crew_id)
+            .order_by(CircadianState.ts.desc())
+        ).first()
+        if cs:
+            circ[c.crew_id] = cs
+    affect = _latest_affect_by_crew(session)
+
+    def last_name(c):
+        return c.display_name.split(" ")[-1]
+
+    pairs = []
+    for i, c1 in enumerate(crews):
+        for c2 in crews[i + 1:]:
+            debt1 = circ[c1.crew_id].debt_hours if c1.crew_id in circ else 0.0
+            debt2 = circ[c2.crew_id].debt_hours if c2.crew_id in circ else 0.0
+            bio1 = _bio_cache.get(c1.crew_id) or {}
+            bio2 = _bio_cache.get(c2.crew_id) or {}
+            sd1 = bio1.get("sleep_debt", 0.0)
+            sd2 = bio2.get("sleep_debt", 0.0)
+            v1 = affect[c1.crew_id].valence if c1.crew_id in affect else 0.0
+            v2 = affect[c2.crew_id].valence if c2.crew_id in affect else 0.0
+            shared = _crew_home_zone(c1.crew_id) == _crew_home_zone(c2.crew_id)
+
+            drivers = {
+                "circadian_debt": round(0.35 * (debt1 + debt2), 3),
+                "sleep_debt": round(0.20 * (sd1 + sd2), 3),
+                "valence_divergence": round(0.9 * abs(v1 - v2), 3),
+                "shared_zone": round(0.6 if shared else 0.0, 3),
+            }
+            score = round(sum(drivers.values()), 3)
+            if score < 1.2:
+                continue
+            reasons = []
+            if debt1 > 2 or debt2 > 2:
+                hi = last_name(c1) if debt1 >= debt2 else last_name(c2)
+                reasons.append(f"{hi} circadian debt {max(debt1, debt2):.1f}h")
+            if (sd1 + sd2) > 4:
+                reasons.append(f"Combined sleep debt {sd1 + sd2:.1f}h")
+            if abs(v1 - v2) > 0.5:
+                reasons.append(f"Affect divergence {abs(v1 - v2):.2f}")
+            if shared:
+                reasons.append(f"Share {_crew_home_zone(c1.crew_id).replace('zone_', '')}")
+            pairs.append({
+                "c1": last_name(c1), "c2": last_name(c2),
+                "c1_id": c1.crew_id, "c2_id": c2.crew_id,
+                "score": score, "drivers": drivers, "reasons": reasons,
+            })
+
+    pairs.sort(key=lambda p: p["score"], reverse=True)
+    return {"pairs": pairs[:6], "model": "explainable_additive", "attributions": True}
+
+
+@app.get("/ml/model-card")
+def ml_model_card(user: dict = Depends(get_current_user)):
+    """Affect-model provenance + real training metrics for the Model Card page."""
+    from ml.affect.regressor import load_model_card
+    card = load_model_card()
+    if not card:
+        return {"available": False, "reason": "not_trained",
+                "hint": "Run: py -3 ml/train_affect.py"}
+    return {"available": True, **card}
 
 
 # ─── Scenarios ───────────────────────────────────────────────────────────────
@@ -359,6 +502,36 @@ def inject_scenario(
 @app.get("/scenario/list")
 def list_scenarios(user: dict = Depends(get_current_user)):
     return {"scenarios": VALID_SCENARIOS}
+
+
+# ─── Digital Twin: forward simulation / what-if ───────────────────────────────
+@app.post("/twin/simulate")
+def twin_simulate(
+    body: dict,
+    session: Session = Depends(get_session),
+    user: dict = Depends(require_ground),
+):
+    """
+    Project crew circadian + affect trajectories forward (optionally under a
+    hypothetical scenario). Read-only: never mutates the live pacemaker state.
+    """
+    from sim.simulator import simulate_forward
+    horizon = int(body.get("horizon_hours", 16))
+    horizon = max(4, min(48, horizon))
+    scenario = body.get("scenario")
+    if scenario and scenario not in VALID_SCENARIOS:
+        raise HTTPException(400, f"Unknown scenario: {scenario}")
+    scenario_at = int(body.get("scenario_at_hour", 0))
+    crew_ids = body.get("crew_ids")
+    if not crew_ids:
+        crew_ids = [c.crew_id for c in session.exec(select(Crew)).all()]
+
+    result = simulate_forward(crew_ids, horizon, scenario, scenario_at)
+
+    append_ethics_entry(session, "GROUND", user.get("sub", "ground"),
+                        "TWIN_SIMULATE",
+                        {"horizon_hours": horizon, "scenario": scenario, "n_crew": len(crew_ids)})
+    return result
 
 
 # ─── Ethics Ledger ───────────────────────────────────────────────────────────

@@ -269,6 +269,133 @@ def compute_sensory_monotony_index(samples: list) -> float:
     return round(min(1.0, smi), 3)
 
 
+# ─── Digital Twin: forward simulation / what-if ───────────────────────────────
+# Scenario stress profiles for the *forecast* horizon. Unlike the live 60s
+# decay used for the real-time stream, forecasting projects over mission-hours,
+# so we model an acute spike followed by a ~3h recovery.
+FORECAST_SCENARIOS = {
+    "SolarProtonEvent":     {"peak": 1.9, "tau_h": 3.5},
+    "CommsBlackout":        {"peak": 1.3, "tau_h": 4.0},
+    "InterpersonalConflict":{"peak": 1.0, "tau_h": 2.5},
+    "EquipmentFailure":     {"peak": 1.6, "tau_h": 2.0},
+}
+
+
+def _forecast_stress_mult(scenario: Optional[str], hours_since_inject: float) -> float:
+    """Stress multiplier for the forecast horizon (hour-scale recovery)."""
+    if not scenario or hours_since_inject < 0:
+        return 1.0
+    profile = FORECAST_SCENARIOS.get(scenario)
+    if not profile:
+        return 1.0
+    return 1.0 + profile["peak"] * math.exp(-hours_since_inject / profile["tau_h"])
+
+
+def simulate_forward(
+    crew_ids: List[str],
+    horizon_hours: int = 16,
+    scenario: Optional[str] = None,
+    scenario_at_hour: int = 0,
+) -> dict:
+    """
+    Project circadian + affect trajectories forward WITHOUT mutating live state.
+
+    Clones each crew's circadian oscillator, integrates it hour-by-hour under
+    their pod lighting, synthesises the biometric sample that would result, and
+    runs the trained affect estimator on it. Optionally injects a hypothetical
+    scenario at a chosen future hour so Ground can rehearse "what if".
+    """
+    from ml.circadian.oscillator import _get_oscillator, CircadianOscillator
+    from ml.affect.regressor import estimate_affect
+
+    t0_h = mission_clock_h()
+    crew_out = []
+    # habitat aggregates per hour
+    agg_alert = [0.0] * (horizon_hours + 1)
+    agg_debt = [0.0] * (horizon_hours + 1)
+    agg_valence = [0.0] * (horizon_hours + 1)
+
+    for crew_id in crew_ids:
+        state = _get_crew_state(crew_id)
+        phase_offset = state["phase_offset_h"]
+        sleep_debt = state["sleep_debt_h"]
+
+        # Clone oscillator state so we never touch the live pacemaker
+        live = _get_oscillator(crew_id)
+        sim_osc = CircadianOscillator(crew_id, phase_offset_h=live.phase_offset_h)
+        sim_osc.x, sim_osc.xc = live.x, live.xc
+
+        # Pod lighting (chromotherapy override if set)
+        pod_id = f"zone_dendrite_pod_{crew_id[-2:]}"
+        chroma = _zone_chromotherapy.get(pod_id)
+
+        trajectory = []
+        for h in range(horizon_hours + 1):
+            t_h = (t0_h + h) % 24.0
+            if chroma:
+                lux, cct = chroma["lux"], chroma["cct"]
+            else:
+                lux = max(50, 600 * alertness_curve(t_h))
+                cct = 2700 + 3800 * max(0, math.cos(2 * math.pi * (t_h - 14) / 24))
+
+            circ = sim_osc.step(1.0, lux=lux, cct_kelvin=cct) if h > 0 else sim_osc._state()
+
+            stress = _forecast_stress_mult(scenario, h - scenario_at_hour)
+
+            # Synthesise the biometrics this state would produce
+            base_hrv = baseline_hrv(t_h + phase_offset)
+            hrv = max(15, base_hrv / stress)
+            hr = max(45, min(120, baseline_hr(t_h + phase_offset) * (0.8 + 0.2 * stress)))
+            eda = max(0.5, 2.0 + 3.0 * math.log(stress) if stress > 1 else 2.0)
+            core_temp = circadian_temp_phase(t_h + phase_offset)
+            # Sleep debt drifts: recovers in the sleep window, accrues otherwise
+            sh = (t_h + phase_offset) % 24
+            sleep_debt = max(0, sleep_debt - 0.1) if (sh >= 23 or sh <= 7) else min(8, sleep_debt + 0.015)
+
+            bio = {"hrv_rmssd": hrv, "hr": hr, "eda": eda,
+                   "core_temp": core_temp, "sleep_debt": sleep_debt}
+            aff = estimate_affect(bio)
+
+            point = {
+                "hour_offset": h,
+                "t_hours": round(t_h, 2),
+                "alertness": circ["alertness"],
+                "phase_hours": circ["phase_hours"],
+                "debt_hours": circ["debt_hours"],
+                "hrv": round(hrv, 1),
+                "hr": round(hr, 1),
+                "arousal": aff["arousal"],
+                "valence": aff["valence"],
+                "stress_mult": round(stress, 2),
+            }
+            trajectory.append(point)
+            agg_alert[h] += circ["alertness"]
+            agg_debt[h] += circ["debt_hours"]
+            agg_valence[h] += aff["valence"]
+
+        crew_out.append({"crew_id": crew_id, "trajectory": trajectory})
+
+    n = max(1, len(crew_ids))
+    habitat = [{
+        "hour_offset": h,
+        "mean_alertness": round(agg_alert[h] / n, 3),
+        "mean_debt": round(agg_debt[h] / n, 3),
+        "mean_valence": round(agg_valence[h] / n, 3),
+        # Friction index rises with mean debt and negative valence
+        "friction_index": round(max(0.0, agg_debt[h] / n * 0.4 - agg_valence[h] / n * 0.5 + 0.2), 3),
+    } for h in range(horizon_hours + 1)]
+
+    return {
+        "horizon_hours": horizon_hours,
+        "step_hours": 1,
+        "scenario": scenario,
+        "scenario_at_hour": scenario_at_hour if scenario else None,
+        "t0_mission_h": round(t0_h, 2),
+        "crew": crew_out,
+        "habitat": habitat,
+    }
+
+
 def get_shield_integrity(water_mass_kg: float = 8000.0, consumed_kg: float = 0.0) -> dict:
     """
     Water doubles as storm shelter radiation shield in Dendrite level.

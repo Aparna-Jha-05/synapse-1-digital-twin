@@ -9,7 +9,7 @@ import Link from "next/link";
 const NAV_ITEMS = [
   { label: "Home", href: (id: string) => `/crew/${id}`, icon: "⬡" },
   { label: "Hearth", href: (id: string) => `/crew/${id}/hearth`, icon: "◉" },
-  { label: "Garden", href: (id: string) => `/crew/${id}/garden`, icon: "❋" },
+  { label: "Garden", href: (id: string) => `/crew/${id}/garden`, icon: "◆" },
   { label: "Journal", href: (id: string) => `/crew/${id}/journal`, icon: "◌" },
   { label: "Hippocampal Test", href: (id: string) => `/crew/${id}/anchor-test`, icon: "◈" },
 ];
@@ -51,7 +51,7 @@ export default function CrewLayout({ children, params }: { children: React.React
         </div>
         <div className="flex items-center gap-4">
           <span className="mission-clock text-xs text-slate-500">{clock}</span>
-          <button onClick={() => { logout(); router.push("/"); }}
+          <button type="button" onClick={() => { logout(); router.push("/"); }}
             className="text-xs text-slate-500 hover:text-slate-300 transition-colors">
             EXIT
           </button>

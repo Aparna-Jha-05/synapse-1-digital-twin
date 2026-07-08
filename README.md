@@ -5,6 +5,11 @@
 
 > *Architecture as a Proactive Behavioural Support System*
 
+An operational **digital twin** of a lunar habitat that models crew circadian
+rhythm and affective state in real time, forecasts how the mission will unfold,
+and treats the built environment itself as a behavioural-support instrument —
+all under an explicit, auditable ethics contract.
+
 ---
 
 ## Quick Start (Dev Mode — 90 seconds)
@@ -33,13 +38,23 @@ npm run dev
 
 Frontend ready at: http://localhost:3000
 
+### 3. (Optional) Train the affect model
+
+The repo ships with pre-trained weights, but you can reproduce them:
+
+```bash
+py -3 ml/train_affect.py
+```
+
+This regenerates `ml/weights/affect_mlp.pt` and `affect_model_card.json`.
+
 ---
 
 ## Login Credentials
 
 | Role | Username | Password | Access |
 |---|---|---|---|
-| Ground Control | `ground` | `ground` | Full analytics, ML, Ethics ledger |
+| Ground Control | `ground` | `ground` | Full analytics, ML, Digital Twin, Ethics ledger |
 | Crew Member | `crew01`–`crew12` | `crew` | Personal companion view |
 
 ---
@@ -49,26 +64,32 @@ Frontend ready at: http://localhost:3000
 ```
 spar/
 ├── backend/          FastAPI + SQLModel + WebSockets
-│   ├── main.py       All API routes + WebSocket endpoints
+│   ├── main.py       All API routes + WebSocket endpoints + Digital Twin
 │   ├── models.py     SQLModel database tables
 │   ├── auth.py       JWT authentication (GROUND / CREW roles)
 │   ├── seed.py       Initial crew + zone data
 │   ├── sim/          Physically-grounded data simulator
-│   │   └── simulator.py  Circadian cosine, Perlin noise airflow, stress scenarios
+│   │   └── simulator.py  Circadian cosine, Perlin airflow, stress scenarios,
+│   │                     forward simulation (digital twin)
 │   └── ml/
 │       ├── circadian/    Kronauer van der Pol oscillator (PyTorch)
-│       └── affect/       Russell circumplex MLP regressor (PyTorch)
+│       └── affect/       Russell circumplex MLP + MC-dropout uncertainty
 │
 ├── frontend/         Next.js 14 + TypeScript + TailwindCSS
+│   ├── components/
+│   │   ├── GalaxyBackground.tsx      Shader-driven surreal galaxy backdrop
+│   │   └── habitat/HabitatViewer3D.tsx  Live 3D habitat (React Three Fiber)
 │   └── app/
-│       ├── page.tsx              Landing page
-│       ├── login/                Role-aware login
+│       ├── page.tsx              Landing (galaxy backdrop)
+│       ├── login/                Role-aware login (galaxy backdrop)
 │       ├── ground/               Ground Control dashboard
-│       │   ├── page.tsx          Neuro-Core OS overview
-│       │   ├── habitat/          3D viewer (React Three Fiber)
+│       │   ├── page.tsx          Neuro-Core OS — live 3D + friction + vitals
+│       │   ├── habitat/          Full 3D viewer (heatmaps: Lux/CCT/CO₂/Acoustic/Cohesion)
+│       │   ├── twin/             Digital Twin — forward simulation + scrub timeline
 │       │   ├── crew/             Full biometrics + circadian rings
 │       │   ├── circadian/        Phase oscillator dashboard
 │       │   ├── scenarios/        Scenario injection + replay
+│       │   ├── model-card/       Affect model card (metrics, curve, limitations)
 │       │   ├── ethics/           Ethics accountability ledger
 │       │   └── comms/            Comms latency + ISRU queue
 │       └── crew/[id]/            Crew Companion
@@ -78,8 +99,11 @@ spar/
 │           ├── journal/          Private encrypted journal (device-only)
 │           └── anchor-test/      Hippocampal spatial memory test
 │
-├── ml/               ML documentation + labeling rules
+├── ml/               ML training, docs & labeling rules
+│   ├── train_affect.py   Trains the affect MLP from documented label rules
+│   └── weights/          Trained weights + model card (committed)
 ├── docs/             NARRATIVE, ETHICAL_STATEMENT, ML_METHODS, DEMO
+├── frontend/vercel.json   Frontend (Vercel) deployment config
 └── docker-compose.yml
 ```
 
@@ -87,40 +111,95 @@ spar/
 
 ## Key Features
 
-| Feature | Location | Spec Phase |
+| Feature | Location | Notes |
 |---|---|---|
-| 3D habitat viewer (R3F) | `/ground/habitat` | Phase 1 |
-| WebSocket bio + env streams (2Hz/1Hz) | `/ws/env`, `/ws/bio/{id}` | Phase 2 |
-| Kronauer circadian oscillator | `ml/circadian/oscillator.py` | Phase 3 |
-| Russell circumplex affect MLP | `ml/affect/regressor.py` | Phase 4 |
-| Neuro-Core OS dashboard | `/ground` | Phase 5 |
-| Crew companion (mood weather, journal) | `/crew/{id}` | Phase 6 |
-| Hash-chained ethics ledger | `/ground/ethics` | Phase 7 |
-| Sensory Monotony Index (SMI) | `/habitat/smis` | New Feature 1 |
-| Comms Latency Theatre | `/ground/comms` | New Feature 4 |
-| Regolith Brick Queue (ISRU) | `/ground/comms` | New Feature 5 |
-| Chromotherapy Autopilot | `sim/simulator.py` + UI | New Feature 6 |
-| Hippocampal Anchor Test | `/crew/{id}/anchor-test` | New Feature 2 |
+| Live 3D habitat viewer (R3F) | `/ground` + `/ground/habitat` | Embedded on the dashboard, airflow particles, 5 heatmap modes |
+| Surreal galaxy backdrop | Landing + Login | Shader-driven differential rotation, iridescence, shooting stars |
+| **Digital Twin — forward simulation** | `/ground/twin` | Projects circadian + affect 4–48h ahead with what-if scenarios + scrub timeline |
+| **Trained affect model + Model Card** | `/ground/model-card` | Real PyTorch training (R² 0.88/0.94), MC-dropout uncertainty, honest limitations |
+| **Explainable friction model** | `/ground` (server-side) | Additive attribution over circadian debt, sleep debt, affect divergence, shared zone |
+| **Per-zone cohesion heatmap** | `/ground/habitat` | Grounded in crew affect valence + spread (previously a stub) |
+| Kronauer circadian oscillator | `backend/ml/circadian` | Van der Pol limit-cycle, per-crew phase |
+| WebSocket bio + env streams | `/ws/env`, `/ws/bio/{id}` | 2 Hz env, 1 Hz bio, consent-gated |
+| Hash-chained ethics ledger | `/ground/ethics` | Every actuation + twin run logged and verifiable |
+| Sensory Monotony Index (SMI) | `/ground` | Variance-based habituation alarm |
+| Comms Latency Theatre / ISRU queue | `/ground/comms` | Earth-link latency, regolith brick curing |
+| Hippocampal Anchor Test | `/crew/{id}/anchor-test` | Spatial memory check |
+
+### Notable API endpoints
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| `POST` | `/twin/simulate` | Forward-simulate crew trajectories (read-only, ethics-logged) |
+| `GET`  | `/crew/friction` | Explainable pairwise friction with per-driver attributions |
+| `GET`  | `/crew/cohesion-heatmap` | Per-zone social cohesion |
+| `GET`  | `/ml/model-card` | Affect-model provenance + real training metrics |
+| `GET`  | `/crew/{id}/affect` | Affect estimate + live MC-dropout uncertainty band |
 
 ---
 
-## Demo Script
+## Machine Learning
 
-See [docs/DEMO.md](docs/DEMO.md) for the full 4-minute jury demo walkthrough.
+Two models, both demonstrators (indicative, **not** diagnostic):
 
-## Documentation
+1. **Circadian oscillator** — a Kronauer-style van der Pol limit-cycle model
+   (Kronauer 1999; St Hilaire 2007) integrated per crew member under their pod
+   lighting.
+2. **Affect estimator** — a small MLP (`7 → 32 → 16 → 2`) mapping biometric
+   features to Russell-circumplex coordinates (arousal, valence). Trained on
+   10,000 synthetic samples whose labels follow the **fully documented rules** in
+   [`ml/affect/labeling.md`](ml/affect/labeling.md). Ships with gradient×input
+   attributions and **Monte-Carlo dropout uncertainty**.
 
-- [docs/NARRATIVE.md](docs/NARRATIVE.md) — Design narrative (~1200 words)
-- [docs/ETHICAL_STATEMENT.md](docs/ETHICAL_STATEMENT.md) — Ethical accountability statement
-- [docs/ML_METHODS.md](docs/ML_METHODS.md) — ML model methods and references
-- [ml/README.md](ml/README.md) — ML literature references
+Validation metrics (see the in-app Model Card): **R² ≈ 0.88 (arousal) / 0.94
+(valence)**, MAE ≈ 0.07.
+
+> "Estimates" not "predicts" — a model's label rules are its implicit values, so
+> they are disclosed on purpose. Not for clinical or occupational decisions.
 
 ---
 
-## Docker (optional)
+## Deployment
+
+The app is split: **Vercel hosts the Next.js frontend**, and the FastAPI backend
+runs on a persistent host (e.g. **Render**), because the backend uses
+WebSockets, long-lived background tasks, and in-memory state that Vercel's
+serverless model does not support.
+
+### Frontend → Vercel
+
+1. Import the repo in Vercel and set **Root Directory** to `frontend`.
+2. Add an environment variable:
+   - `NEXT_PUBLIC_API_URL` = the deployed backend URL (e.g. `https://synapse-1-backend.onrender.com`)
+3. Deploy. `frontend/vercel.json` pins the framework and, importantly, the
+   install command (`npm install --legacy-peer-deps`) this project requires.
+
+> `NEXT_PUBLIC_API_URL` must use `https://` in production; the frontend derives
+> the WebSocket URL from it automatically (`wss://`).
+
+### Backend → Render (or any container/VM host)
+
+```bash
+cd backend
+pip install -r requirements.txt
+uvicorn main:app --host 0.0.0.0 --port $PORT
+```
+
+A `Dockerfile` is provided in `backend/`. CORS currently allows all origins for
+the demo; lock this down to your Vercel domain for production.
+
+### Local Docker (both services)
 
 ```bash
 docker compose up
 ```
 
-Both services start within 90 seconds.
+---
+
+## Documentation
+
+- [docs/NARRATIVE.md](docs/NARRATIVE.md) — Design narrative
+- [docs/ETHICAL_STATEMENT.md](docs/ETHICAL_STATEMENT.md) — Ethical accountability statement
+- [docs/ML_METHODS.md](docs/ML_METHODS.md) — ML model methods and references
+- [ml/README.md](ml/README.md) — ML literature references
+- [docs/DEMO.md](docs/DEMO.md) — Jury demo walkthrough

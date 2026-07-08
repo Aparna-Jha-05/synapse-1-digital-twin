@@ -1,23 +1,33 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
+import dynamic from "next/dynamic";
 import { useAuthStore, useHabitatStore, useBiometricsStore, useCrewStore, useUIStore } from "@/lib/store";
-import { getAllCrew, getShieldIntegrity, getAllSMIs, getCommsStatus, injectScenario, getEthicsLog, getCohesionHeatmap } from "@/lib/api";
+import { getAllCrew, getShieldIntegrity, getAllSMIs, getCommsStatus, injectScenario, getEthicsLog, getFriction } from "@/lib/api";
 import { createEnvWS, createBioWS } from "@/lib/api";
-import { getCircadianDebtColor, getMoodWeather, getMoodEmoji } from "@/lib/utils";
-import type { Crew, ShieldIntegrity, CommsStatus, EthicsLogEntry } from "@/lib/types";
+import { getCircadianDebtColor, getMoodWeather } from "@/lib/utils";
+import type { Crew, ShieldIntegrity, CommsStatus, EthicsLogEntry, FrictionPair } from "@/lib/types";
 import Link from "next/link";
+
+// Dynamic import for R3F (server-side render disabled)
+const HabitatViewer3D = dynamic(() => import("@/components/habitat/HabitatViewer3D"), {
+  ssr: false,
+  loading: () => (
+    <div className="flex items-center justify-center h-full">
+      <div className="w-7 h-7 border-2 border-accent border-t-transparent rounded-full animate-spin" />
+    </div>
+  ),
+});
 
 // ─── Alert Banner ─────────────────────────────────────────────────────────────
 function AlertBanner({ message, type, onDismiss }: { message: string; type: string; onDismiss: () => void }) {
-  const color = type === "critical" ? "danger" : type === "warning" ? "warning" : "accent";
   return (
     <div className={`alert-banner flex items-center justify-between px-4 py-2 border-b ${type === "critical" ? "bg-danger/10 border-danger/30 text-danger" : "bg-warning/10 border-warning/30 text-warning"}`}>
       <div className="flex items-center gap-2 text-sm">
         <span className="w-2 h-2 rounded-full bg-current animate-pulse" />
         {message}
       </div>
-      <button onClick={onDismiss} className="text-current opacity-60 hover:opacity-100 ml-4">✕</button>
+      <button type="button" onClick={onDismiss} className="text-current opacity-60 hover:opacity-100 ml-4">×</button>
     </div>
   );
 }
@@ -85,7 +95,9 @@ function CrewCard({ crew }: { crew: Crew }) {
   const paused = crew.privacy_paused;
 
   const debtColor = circ ? getCircadianDebtColor(circ.debt_hours) : "#94a3b8";
-  const mood = affect && !paused ? getMoodEmoji(affect.arousal, affect.valence) : null;
+  const affectColor = affect && !paused
+    ? (affect.valence > 0.3 ? "#10b981" : affect.valence > -0.1 ? "#f59e0b" : "#ef4444")
+    : "#334155";
 
   return (
     <div className="border border-surface-2 rounded-xl p-3 bg-surface/40 card-hover hover:border-accent/30 transition-all">
@@ -94,8 +106,10 @@ function CrewCard({ crew }: { crew: Crew }) {
           <div className="text-xs font-semibold text-slate-200">{crew.display_name}</div>
           <div className="text-xs text-slate-500">{crew.role}</div>
         </div>
-        <div className="text-lg" title={paused ? "Sharing paused" : getMoodWeather(affect?.arousal ?? 0, affect?.valence ?? 0)}>
-          {paused ? "🔒" : (mood ?? "○")}
+        <div className="flex flex-col items-end gap-1"
+          title={paused ? "Biometric sharing paused by crew" : getMoodWeather(affect?.arousal ?? 0, affect?.valence ?? 0)}>
+          <div className="w-2 h-2 rounded-full" style={{ background: affectColor }} />
+          {paused && <span className="text-xs text-warning/70 font-mono">paused</span>}
         </div>
       </div>
 
@@ -128,7 +142,7 @@ function CrewCard({ crew }: { crew: Crew }) {
 
       {circ && circ.debt_hours > 2 && !paused && (
         <div className="mt-2 text-xs text-danger bg-danger/10 rounded px-2 py-0.5 text-center">
-          ⚠ Circadian debt critical
+          Circadian debt critical
         </div>
       )}
     </div>
@@ -143,10 +157,10 @@ function ScenarioPanel() {
   const [lastInjected, setLastInjected] = useState<string | null>(null);
 
   const scenarios = [
-    { name: "SolarProtonEvent", label: "Solar Proton Event", icon: "☀", color: "danger", desc: "SPE stress cascade across all crew" },
-    { name: "CommsBlackout", label: "Comms Blackout", icon: "📡", color: "warning", desc: "Earth link lost — isolation stress" },
-    { name: "InterpersonalConflict", label: "Interpersonal Conflict", icon: "⚡", color: "warning", desc: "Social friction in Soma ring" },
-    { name: "EquipmentFailure", label: "Equipment Failure", icon: "⚙", color: "danger", desc: "Systems emergency — acute stress" },
+    { name: "SolarProtonEvent", label: "Solar Proton Event", abbrev: "SPE", color: "danger", desc: "SPE stress cascade across all crew" },
+    { name: "CommsBlackout", label: "Comms Blackout", abbrev: "COM", color: "warning", desc: "Earth link lost — isolation stress" },
+    { name: "InterpersonalConflict", label: "Interpersonal Conflict", abbrev: "PSY", color: "warning", desc: "Social friction in Soma ring" },
+    { name: "EquipmentFailure", label: "Equipment Failure", abbrev: "SYS", color: "danger", desc: "Systems emergency — acute stress" },
   ];
 
   const handleInject = async (name: string) => {
@@ -165,74 +179,70 @@ function ScenarioPanel() {
       <div className="flex items-center gap-2 mb-3">
         <label className="text-xs text-slate-500">Seed:</label>
         <input type="number" value={seed} onChange={(e) => setSeed(parseInt(e.target.value) || 42)}
+          title="Random seed for scenario injection"
+          aria-label="Scenario seed"
           className="w-20 px-2 py-1 bg-surface-2 border border-surface-3 rounded text-xs font-mono text-slate-300 focus:outline-none focus:border-accent" />
       </div>
       <div className="space-y-2">
         {scenarios.map((s) => (
-          <button key={s.name} onClick={() => handleInject(s.name)}
+          <button type="button" key={s.name} onClick={() => handleInject(s.name)}
             disabled={injecting !== null}
             className={`w-full flex items-center justify-between px-3 py-2 rounded-lg border text-xs transition-all ${lastInjected === s.name ? "border-success/50 bg-success/10 text-success" : s.color === "danger" ? "border-danger/30 bg-danger/5 hover:bg-danger/10 text-danger" : "border-warning/30 bg-warning/5 hover:bg-warning/10 text-warning"} disabled:opacity-50`}>
-            <span>{s.icon} {s.label}</span>
+            <span><span className="font-mono opacity-60 border border-current rounded px-1 mr-2 text-xs">{s.abbrev}</span>{s.label}</span>
             <span className="text-slate-600">{s.desc}</span>
           </button>
         ))}
       </div>
       {lastInjected && (
-        <div className="mt-2 text-xs text-success text-center">✓ {lastInjected} injected</div>
+        <div className="mt-2 text-xs text-success text-center">Injected: {lastInjected}</div>
       )}
     </div>
   );
 }
 
-// ─── Predictive Friction Panel ────────────────────────────────────────────────
-function FrictionPanel({ crew }: { crew: Crew[] }) {
-  const risks = crew
-    .flatMap((c1, i) => crew.slice(i + 1).map((c2) => {
-      const debt1 = c1.circadian?.debt_hours ?? 0;
-      const debt2 = c2.circadian?.debt_hours ?? 0;
-      const sdDebt1 = c1.bio?.sleep_debt ?? 0;
-      const sdDebt2 = c2.bio?.sleep_debt ?? 0;
-      const score = (debt1 + debt2) / 2 + (sdDebt1 + sdDebt2) / 4;
-      if (score < 1.5) return null;
-      return {
-        c1: c1.display_name.split(" ").pop(),
-        c2: c2.display_name.split(" ").pop(),
-        score,
-        reasons: [
-          debt1 > 2 ? `${c1.display_name.split(" ").pop()} circadian debt ${debt1.toFixed(1)}h` : null,
-          debt2 > 2 ? `${c2.display_name.split(" ").pop()} circadian debt ${debt2.toFixed(1)}h` : null,
-          (sdDebt1 + sdDebt2) > 3 ? `Combined sleep debt ${(sdDebt1 + sdDebt2).toFixed(1)}h` : null,
-        ].filter(Boolean) as string[],
-      };
-    }))
-    .filter(Boolean)
-    .sort((a, b) => b!.score - a!.score)
-    .slice(0, 5);
+// ─── Predictive Friction Panel (server-side explainable model) ────────────────
+const DRIVER_LABELS: Record<string, string> = {
+  circadian_debt: "Circadian debt",
+  sleep_debt: "Sleep debt",
+  valence_divergence: "Affect divergence",
+  shared_zone: "Shared zone",
+};
 
+function FrictionPanel({ pairs }: { pairs: FrictionPair[] }) {
   return (
     <div className="border border-surface-2 rounded-xl p-4 bg-surface/50">
-      <div className="label-xs text-slate-400 mb-3">Predictive Friction · ML Estimates</div>
-      {risks.length === 0 ? (
+      <div className="label-xs text-slate-400 mb-3">Predictive Friction · Explainable Model</div>
+      {pairs.length === 0 ? (
         <div className="text-xs text-success text-center py-3">No friction risks detected</div>
       ) : (
         <div className="space-y-2">
-          {risks.map((r, i) => r && (
-            <div key={i} className="border border-warning/20 rounded-lg p-2 bg-warning/5">
-              <div className="flex items-center justify-between mb-1">
-                <span className="text-xs text-warning font-mono">{r.c1} ↔ {r.c2}</span>
-                <span className="text-xs text-slate-500">Risk: {r.score.toFixed(1)}</span>
+          {pairs.map((r, i) => {
+            const maxDriver = Math.max(...Object.values(r.drivers), 0.001);
+            return (
+              <div key={i} className="border border-warning/20 rounded-lg p-2 bg-warning/5">
+                <div className="flex items-center justify-between mb-1.5">
+                  <span className="text-xs text-warning font-mono">{r.c1} ↔ {r.c2}</span>
+                  <span className="text-xs text-slate-500">Risk: {r.score.toFixed(1)}</span>
+                </div>
+                {/* Driver contribution bars */}
+                <div className="space-y-1">
+                  {Object.entries(r.drivers).filter(([, v]) => v > 0).map(([k, v]) => (
+                    <div key={k} className="flex items-center gap-2">
+                      <span className="text-xs text-slate-500 w-24 shrink-0">{DRIVER_LABELS[k] ?? k}</span>
+                      <div className="flex-1 h-1.5 bg-surface-2 rounded-full overflow-hidden">
+                        <div className="h-full bg-warning/60 rounded-full" style={{ width: `${(v / maxDriver) * 100}%` }} />
+                      </div>
+                      <span className="text-xs font-mono text-slate-400 w-8 text-right">{v.toFixed(1)}</span>
+                    </div>
+                  ))}
+                </div>
               </div>
-              <div className="space-y-0.5">
-                {r.reasons.map((reason, j) => (
-                  <div key={j} className="text-xs text-slate-400">• {reason}</div>
-                ))}
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
       <div className="mt-2 text-xs text-slate-600 italic">
-        Attributions: circadian debt, sleep debt, schedule overlap
+        Additive attribution — support tool, never a verdict.
       </div>
     </div>
   );
@@ -270,25 +280,30 @@ export default function GroundDashboard() {
   const [smis, setSmis] = useState<Record<string, { smi: number; alarm: boolean }>>({});
   const [comms, setComms] = useState<CommsStatus | null>(null);
   const [ethics, setEthics] = useState<EthicsLogEntry[]>([]);
+  const [friction, setFriction] = useState<FrictionPair[]>([]);
   const [alerts, setAlerts] = useState<Array<{ id: string; msg: string; type: string }>>([]);
+  const [selectedZone, setSelectedZone] = useState<string | null>(null);
+  const [heatmapMode, setHeatmapMode] = useState<string | null>("Lux");
   const { updateEnvBatch } = useHabitatStore();
   const { updateBio, setPrivacyBlocked } = useBiometricsStore();
 
   const fetchData = useCallback(async () => {
     if (!token) return;
     try {
-      const [crewData, shieldData, smiData, commsData, ethicsData] = await Promise.all([
+      const [crewData, shieldData, smiData, commsData, ethicsData, frictionData] = await Promise.all([
         getAllCrew(),
         getShieldIntegrity(),
         getAllSMIs(),
         getCommsStatus(),
         getEthicsLog(),
+        getFriction(),
       ]);
       setCrew(crewData);
       setShield(shieldData);
       setSmis(smiData);
       setComms(commsData);
       setEthics(ethicsData);
+      setFriction(frictionData.pairs ?? []);
 
       // Check for circadian debt alerts
       const debtCrew = crewData.filter((c: Crew) => c.circadian && c.circadian.debt_hours > 2);
@@ -374,18 +389,29 @@ export default function GroundDashboard() {
           <div className="border border-surface-2 rounded-xl overflow-hidden bg-surface/50"
             style={{ height: "400px" }}>
             <div className="flex items-center justify-between px-4 py-2 border-b border-surface-2">
-              <div className="label-xs text-slate-400">Habitat 3D Viewer</div>
-              <Link href="/ground/habitat" className="text-xs text-accent hover:underline">Full view →</Link>
-            </div>
-            <div className="flex items-center justify-center h-full">
-              <div className="text-center space-y-2">
-                <div className="text-4xl">◈</div>
-                <p className="text-slate-400 text-sm">3D Habitat Viewer</p>
-                <Link href="/ground/habitat"
-                  className="inline-block px-4 py-2 bg-accent/10 border border-accent/30 rounded-lg text-accent text-xs hover:bg-accent/20 transition-colors">
-                  Open Full Viewer →
-                </Link>
+              <div className="label-xs text-slate-400">Habitat 3D Viewer · Live</div>
+              <div className="flex items-center gap-1">
+                {["Lux", "CO₂", "Acoustic", "Off"].map((m) => (
+                  <button key={m} type="button" onClick={() => setHeatmapMode(m === "Off" ? null : m)}
+                    className={`px-2 py-0.5 rounded text-xs transition-colors ${heatmapMode === m || (m === "Off" && !heatmapMode) ? "bg-accent/20 text-accent border border-accent/40" : "text-slate-500 hover:text-slate-300 border border-transparent"}`}>
+                    {m}
+                  </button>
+                ))}
+                <Link href="/ground/habitat" className="ml-2 text-xs text-accent hover:underline">Full view →</Link>
               </div>
+            </div>
+            <div className="relative" style={{ height: "calc(100% - 41px)" }}>
+              <HabitatViewer3D
+                selectedZone={selectedZone}
+                onSelectZone={setSelectedZone}
+                cameraPreset="Overview"
+                heatmapMode={heatmapMode}
+              />
+              {selectedZone && (
+                <div className="absolute bottom-2 left-2 bg-surface/90 border border-accent/30 rounded-lg px-3 py-1.5 text-xs text-accent font-mono">
+                  {selectedZone.replace("zone_", "").replace(/_/g, " ")}
+                </div>
+              )}
             </div>
           </div>
 
@@ -399,7 +425,7 @@ export default function GroundDashboard() {
                   <div className={`font-mono text-sm ${data.alarm ? "text-warning" : "text-success"}`}>
                     {(data.smi * 100).toFixed(0)}%
                   </div>
-                  {data.alarm && <div className="text-xs text-warning">⚠ LOW</div>}
+                  {data.alarm && <div className="text-xs text-warning">ALARM</div>}
                 </div>
               ))}
             </div>
@@ -408,7 +434,7 @@ export default function GroundDashboard() {
 
         {/* Right: Friction + Scenario + Shield */}
         <div className="col-span-3 space-y-3">
-          <FrictionPanel crew={crew} />
+          <FrictionPanel pairs={friction} />
           <ShieldDial shield={shield} />
           <ScenarioPanel />
 

@@ -1,9 +1,9 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useHabitatStore, useAuthStore } from "@/lib/store";
-import { setChromotherapy } from "@/lib/api";
+import { setChromotherapy, getCohesionHeatmap } from "@/lib/api";
 import { LEVEL_COLORS, CHROMOTHERAPY_PRESETS } from "@/lib/types";
 
 // Dynamic import for R3F (server-side-render disabled)
@@ -25,8 +25,17 @@ export default function HabitatPage() {
   const [selectedZone, setSelectedZone] = useState<string | null>(null);
   const [cameraPreset, setCameraPreset] = useState("Overview");
   const [heatmapMode, setHeatmapMode] = useState<string | null>(null);
+  const [cohesion, setCohesion] = useState<Record<string, { cohesion: number }>>({});
   const { zones } = useHabitatStore();
   const { token } = useAuthStore();
+
+  useEffect(() => {
+    if (!token || heatmapMode !== "Cohesion") return;
+    const load = () => getCohesionHeatmap().then(setCohesion).catch(() => {});
+    load();
+    const id = setInterval(load, 5000);
+    return () => clearInterval(id);
+  }, [token, heatmapMode]);
 
   const zone = selectedZone ? zones[selectedZone] : null;
 
@@ -68,6 +77,7 @@ export default function HabitatPage() {
             onSelectZone={setSelectedZone}
             cameraPreset={cameraPreset}
             heatmapMode={heatmapMode}
+            cohesion={cohesion}
           />
         </div>
 

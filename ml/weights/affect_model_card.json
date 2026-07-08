@@ -1,0 +1,105 @@
+{
+  "model_name": "SYNAPSE-1 Affect Estimator",
+  "architecture": "MLP 7\u219232(LayerNorm,GELU,Dropout0.1)\u219216(GELU)\u21922(Tanh)",
+  "framework": "PyTorch 2.11.0+cpu",
+  "trained_at": "2026-07-08T19:38:39.984062+00:00",
+  "seed": 42,
+  "n_samples": 10000,
+  "train_val_split": "85/15",
+  "epochs": 120,
+  "optimizer": "AdamW(lr=2e-3, wd=1e-4) + CosineAnnealing",
+  "loss": "SmoothL1 (Huber)",
+  "feature_names": [
+    "hrv_rmssd_norm",
+    "lf_hf_proxy",
+    "eda_norm",
+    "sleep_debt_norm",
+    "core_temp_deviation",
+    "hr_norm",
+    "circadian_phase_sin"
+  ],
+  "outputs": [
+    "arousal",
+    "valence"
+  ],
+  "metrics": {
+    "best_val_loss": 0.00777,
+    "val_mae_arousal": 0.0743,
+    "val_mae_valence": 0.0592,
+    "val_r2_arousal": 0.8795,
+    "val_r2_valence": 0.9347
+  },
+  "label_rules": [
+    "Stressed  (arousal\u2191, valence\u2193): HRV<25ms \u2227 EDA>5\u00b5S \u2227 HR>90bpm",
+    "Calm      (arousal\u2193, valence\u2191): HRV>60ms \u2227 sleep_debt<1h \u2227 EDA<2\u00b5S",
+    "Engaged   (arousal\u2191, valence\u2191): HRV>50ms \u2227 75\u2264HR\u226490 \u2227 ToD 09-11/14-16",
+    "Exhausted (arousal\u2193, valence\u2193): sleep_debt>5h \u2227 HRV<35ms \u2227 \u0394core_temp<-0.3\u00b0C"
+  ],
+  "limitations": [
+    "Labels are physiological proxies, not validated psychometry.",
+    "No individual baseline calibration or personality modelling.",
+    "Not for clinical or occupational decisions \u2014 support only."
+  ],
+  "history": [
+    {
+      "epoch": 0,
+      "train_loss": 0.08678,
+      "val_loss": 0.05641
+    },
+    {
+      "epoch": 10,
+      "train_loss": 0.01306,
+      "val_loss": 0.01114
+    },
+    {
+      "epoch": 20,
+      "train_loss": 0.01119,
+      "val_loss": 0.00962
+    },
+    {
+      "epoch": 30,
+      "train_loss": 0.01041,
+      "val_loss": 0.00898
+    },
+    {
+      "epoch": 40,
+      "train_loss": 0.00952,
+      "val_loss": 0.0085
+    },
+    {
+      "epoch": 50,
+      "train_loss": 0.00927,
+      "val_loss": 0.00839
+    },
+    {
+      "epoch": 60,
+      "train_loss": 0.00918,
+      "val_loss": 0.00814
+    },
+    {
+      "epoch": 70,
+      "train_loss": 0.00878,
+      "val_loss": 0.00799
+    },
+    {
+      "epoch": 80,
+      "train_loss": 0.00874,
+      "val_loss": 0.00789
+    },
+    {
+      "epoch": 90,
+      "train_loss": 0.00878,
+      "val_loss": 0.00783
+    },
+    {
+      "epoch": 100,
+      "train_loss": 0.0088,
+      "val_loss": 0.0078
+    },
+    {
+      "epoch": 110,
+      "train_loss": 0.00884,
+      "val_loss": 0.00779
+    }
+  ]
+}

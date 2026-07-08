@@ -20,9 +20,10 @@ See /ml/affect/labeling.md for complete methodology disclosure.
 Note: "estimates" not "predicts" — epistemic honesty matters.
 """
 from __future__ import annotations
+import json
 import math
 import time
-from typing import Dict
+from typing import Dict, Optional
 
 import numpy as np
 
@@ -206,6 +207,72 @@ def estimate_affect(bio: dict) -> dict:
             pass
 
     return rule_based_affect(features)
+
+
+def estimate_affect_with_uncertainty(bio: dict, n_samples: int = 24) -> dict:
+    """
+    Monte-Carlo dropout uncertainty estimate.
+
+    Runs N stochastic forward passes with dropout *active* and reports the
+    mean estimate plus the standard deviation as an epistemic uncertainty
+    band. Honest uncertainty is part of the ethical contract — a wide band
+    means "the model is unsure", not "the crew member is fine".
+    """
+    base = estimate_affect(bio)
+    model = _get_model()
+    if model is None or not HAS_TORCH:
+        # Rule-based fallback: report a fixed, clearly-labelled band
+        base["arousal_std"] = 0.12
+        base["valence_std"] = 0.12
+        base["confidence"] = 0.6
+        return base
+
+    try:
+        import torch
+        features = extract_features(bio)
+        x = torch.tensor(features).unsqueeze(0)
+
+        # Enable dropout only (keep LayerNorm in eval via manual toggle)
+        model.train()
+        outs = []
+        with torch.no_grad():
+            for _ in range(n_samples):
+                outs.append(model(x).squeeze().numpy())
+        model.eval()
+
+        arr = np.stack(outs)  # (n, 2)
+        mean = arr.mean(axis=0)
+        std = arr.std(axis=0)
+        # Confidence: 1 when combined std is ~0, decays as uncertainty grows
+        combined = float((std[0] + std[1]) / 2.0)
+        confidence = round(max(0.0, min(1.0, 1.0 - combined * 3.0)), 3)
+
+        base["arousal"] = round(float(mean[0]), 3)
+        base["valence"] = round(float(mean[1]), 3)
+        base["arousal_std"] = round(float(std[0]), 3)
+        base["valence_std"] = round(float(std[1]), 3)
+        base["confidence"] = confidence
+        return base
+    except Exception:
+        base["arousal_std"] = 0.12
+        base["valence_std"] = 0.12
+        base["confidence"] = 0.6
+        return base
+
+
+def load_model_card() -> Optional[dict]:
+    """Load the training-time model card written by ml/train_affect.py."""
+    import os
+    card_path = os.path.join(
+        os.path.dirname(__file__), "..", "..", "..", "ml", "weights", "affect_model_card.json"
+    )
+    if os.path.exists(card_path):
+        try:
+            with open(card_path, "r", encoding="utf-8") as fh:
+                return json.load(fh)
+        except Exception:
+            return None
+    return None
 
 
 def _gradient_attribution(model, features: np.ndarray) -> dict:

@@ -1,52 +1,9 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
 
-function StarField() {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-
-    canvas.width = window.innerWidth;
-    canvas.height = window.innerHeight;
-
-    const stars = Array.from({ length: 300 }, () => ({
-      x: Math.random() * canvas.width,
-      y: Math.random() * canvas.height,
-      r: Math.random() * 1.5 + 0.2,
-      a: Math.random(),
-      speed: Math.random() * 0.003 + 0.001,
-    }));
-
-    let frame = 0;
-    function draw() {
-      ctx!.clearRect(0, 0, canvas!.width, canvas!.height);
-      frame++;
-      for (const s of stars) {
-        const alpha = 0.3 + 0.7 * Math.abs(Math.sin(frame * s.speed + s.a * Math.PI));
-        ctx!.beginPath();
-        ctx!.arc(s.x, s.y, s.r, 0, Math.PI * 2);
-        ctx!.fillStyle = `rgba(148,163,184,${alpha})`;
-        ctx!.fill();
-      }
-      requestAnimationFrame(draw);
-    }
-    draw();
-
-    const handleResize = () => {
-      canvas.width = window.innerWidth;
-      canvas.height = window.innerHeight;
-    };
-    window.addEventListener("resize", handleResize);
-    return () => window.removeEventListener("resize", handleResize);
-  }, []);
-
-  return <canvas ref={canvasRef} className="fixed inset-0 pointer-events-none z-0" />;
-}
+const GalaxyBackground = dynamic(() => import("@/components/GalaxyBackground"), { ssr: false });
 
 function NeuralDiagram() {
   return (
@@ -133,7 +90,7 @@ export default function LandingPage() {
 
   return (
     <div className="min-h-screen bg-background flex flex-col items-center justify-center relative overflow-hidden">
-      <StarField />
+      <GalaxyBackground opacity={0.85} />
 
       {/* Neural grid overlay */}
       <div className="fixed inset-0 neural-grid opacity-30 pointer-events-none z-0" />

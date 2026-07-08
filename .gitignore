@@ -34,6 +34,11 @@ dist/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+*.log
+
+# Tooling
+.claude/
+frontend/tsconfig.tsbuildinfo
 
 # Data & Databases
 data/synapse.db

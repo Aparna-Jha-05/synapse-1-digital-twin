@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { useAuthStore } from "@/lib/store";
 import { getAllCrew, getCircadianForecast } from "@/lib/api";
 import { createBioWS } from "@/lib/api";
-import { getCircadianDebtColor, getMoodWeather, getMoodEmoji } from "@/lib/utils";
+import { getCircadianDebtColor, getMoodWeather } from "@/lib/utils";
 import type { Crew, CircadianForecastPoint } from "@/lib/types";
 import { LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip } from "recharts";
 
@@ -54,8 +54,9 @@ function CrewDetailCard({ crew, bioLive }: { crew: Crew; bioLive?: Record<string
     <div className="border border-surface-2 rounded-xl p-4 bg-surface/40 hover:border-accent/20 transition-all">
       {/* Header */}
       <div className="flex items-center gap-3 mb-3">
-        <div className="w-10 h-10 rounded-full bg-gradient-to-br from-accent/30 to-surface-3 flex items-center justify-center text-lg">
-          {paused ? "🔒" : getMoodEmoji(affect?.arousal ?? 0, affect?.valence ?? 0)}
+        <div className="w-10 h-10 rounded-full bg-gradient-to-br from-accent/20 to-surface-3 flex items-center justify-center font-mono font-semibold text-sm text-accent"
+          title={paused ? "Biometric sharing paused" : getMoodWeather(affect?.arousal ?? 0, affect?.valence ?? 0)}>
+          {crew.display_name.split(" ").pop()?.charAt(0) ?? crew.crew_id.slice(-2)}
         </div>
         <div className="flex-1">
           <div className="text-sm font-semibold text-slate-100">{crew.display_name}</div>

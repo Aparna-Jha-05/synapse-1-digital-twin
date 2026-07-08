@@ -8,13 +8,15 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 
 const NAV_ITEMS = [
-  { label: "Neuro-Core OS", href: "/ground", icon: "⬡" },
+  { label: "Mission Overview", href: "/ground", icon: "⬡" },
   { label: "3D Habitat", href: "/ground/habitat", icon: "◈" },
-  { label: "Crew Biometrics", href: "/ground/crew", icon: "♥" },
+  { label: "Digital Twin", href: "/ground/twin", icon: "◐" },
+  { label: "Crew Biometrics", href: "/ground/crew", icon: "◉" },
   { label: "Circadian Intel", href: "/ground/circadian", icon: "◌" },
-  { label: "Scenario Control", href: "/ground/scenarios", icon: "⚡" },
-  { label: "Ethics Ledger", href: "/ground/ethics", icon: "⬜" },
-  { label: "Comms & ISRU", href: "/ground/comms", icon: "◉" },
+  { label: "Scenario Control", href: "/ground/scenarios", icon: "◇" },
+  { label: "Model Card", href: "/ground/model-card", icon: "◈" },
+  { label: "Ethics Ledger", href: "/ground/ethics", icon: "◻" },
+  { label: "Comms & ISRU", href: "/ground/comms", icon: "◎" },
 ];
 
 export default function GroundLayout({ children }: { children: React.ReactNode }) {

@@ -1,9 +1,12 @@
 "use client";
 
 import { useState } from "react";
+import dynamic from "next/dynamic";
 import { useRouter, useSearchParams } from "next/navigation";
 import { login } from "@/lib/api";
 import { useAuthStore } from "@/lib/store";
+
+const GalaxyBackground = dynamic(() => import("@/components/GalaxyBackground"), { ssr: false });
 
 export default function LoginClient() {
   const router = useRouter();
@@ -39,6 +42,7 @@ export default function LoginClient() {
 
   return (
     <div className="min-h-screen bg-background flex items-center justify-center px-4">
+      <GalaxyBackground opacity={0.6} count={9000} bgStars={1600} />
       <div className="fixed inset-0 neural-grid opacity-20 pointer-events-none" />
 
       <div className="relative z-10 w-full max-w-md">

@@ -4,23 +4,41 @@ import { useEffect, useState } from "react";
 import { useAuthStore } from "@/lib/store";
 import { getCrewCircadian, getCrewAffect, getCommsStatus, setChromotherapy, triggerPrivacyPause, getCircadianForecast } from "@/lib/api";
 import { createBioWS } from "@/lib/api";
-import { getMoodWeather, getMoodEmoji, getCircadianDebtColor } from "@/lib/utils";
+import { getMoodWeather, getCircadianDebtColor } from "@/lib/utils";
 import type { CircadianState, AffectEstimate, CommsStatus, BioSample, CircadianForecastPoint } from "@/lib/types";
 import { CHROMOTHERAPY_PRESETS } from "@/lib/types";
 import { AreaChart, Area, XAxis, ResponsiveContainer } from "recharts";
 
 function MoodWeatherGlyph({ arousal, valence }: { arousal: number; valence: number }) {
   const weather = getMoodWeather(arousal, valence);
-  const emoji = getMoodEmoji(arousal, valence);
-  const color = valence > 0.3 ? "#10b981" : valence > -0.1 ? "#f59e0b" : "#ef4444";
+  const dotColor = valence > 0.3 ? "#10b981" : valence > -0.1 ? "#f59e0b" : "#ef4444";
 
   return (
-    <div className="text-center space-y-2 mood-glyph">
-      <div className="text-6xl">{emoji}</div>
-      <div className="text-sm font-medium" style={{ color }}>{weather}</div>
-      <div className="text-xs text-slate-500">Your current mood weather</div>
-      <div className="text-xs text-slate-600 italic">
-        Not a score, not a judgement — just a gentle reading.
+    <div className="flex items-center gap-6 mood-glyph">
+      {/* Affect-plane plot: valence (x) vs arousal (y) */}
+      <div className="shrink-0">
+        <svg width="88" height="88" viewBox="-1.3 -1.3 2.6 2.6">
+          <circle cx="0" cy="0" r="1.2" fill="none" stroke="#1e293b" strokeWidth="0.06" />
+          <line x1="-1.1" x2="1.1" y1="0" y2="0" stroke="#1e293b" strokeWidth="0.04" />
+          <line x1="0" x2="0" y1="-1.1" y2="1.1" stroke="#1e293b" strokeWidth="0.04" />
+          <text x="-1.05" y="0.14" fill="#334155" fontSize="0.19" fontFamily="monospace">neg</text>
+          <text x="0.62" y="0.14" fill="#334155" fontSize="0.19" fontFamily="monospace">pos</text>
+          <text x="0" y="-0.78" fill="#334155" fontSize="0.19" fontFamily="monospace" textAnchor="middle">hi</text>
+          <text x="0" y="1.05" fill="#334155" fontSize="0.19" fontFamily="monospace" textAnchor="middle">lo</text>
+          <circle cx={valence} cy={-arousal} r="0.5" fill={dotColor} opacity="0.1" />
+          <circle cx={valence} cy={-arousal} r="0.32" fill={dotColor} opacity="0.22" />
+          <circle cx={valence} cy={-arousal} r="0.16" fill={dotColor} opacity="0.9" />
+        </svg>
+      </div>
+      <div className="space-y-1.5">
+        <div className="text-xs text-slate-500 font-mono uppercase tracking-widest">Affective state</div>
+        <div className="text-sm font-medium text-slate-100">{weather}</div>
+        <div className="text-xs text-slate-500">
+          Valence · Arousal estimate from biometric stream
+        </div>
+        <div className="text-xs text-slate-600 italic">
+          Not a score, not a judgement — a calibrated reading.
+        </div>
       </div>
     </div>
   );
@@ -101,7 +119,7 @@ function PrivacyControl({ crewId, onPause }: { crewId: string; onPause: () => vo
       </p>
       {paused ? (
         <div className="flex items-center gap-2 text-sm text-warning bg-warning/10 rounded-lg px-4 py-2 border border-warning/20">
-          <span>🔒</span>
+          <div className="w-2 h-2 rounded-sm bg-warning shrink-0" />
           <span>Sharing paused for 2 hours</span>
         </div>
       ) : (

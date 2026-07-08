@@ -4,18 +4,18 @@ from models import Crew, Zone
 
 
 CREW_DATA = [
-    ("crew01", "Dr. Aisha Nkosi", "Commander"),
-    ("crew02", "Dr. Kenji Watanabe", "Flight Surgeon"),
+    ("crew01", "Dr. Vikram Nair", "Commander"),
+    ("crew02", "Dr. Rohan Mehta", "Flight Surgeon"),
     ("crew03", "Dr. Priya Chandrasekaran", "Geologist"),
-    ("crew04", "Dr. Luca Romano", "Systems Engineer"),
-    ("crew05", "Dr. Fatima Al-Rashid", "Biologist"),
-    ("crew06", "Dr. Yuki Tanaka", "Astrobiologist"),
-    ("crew07", "Dr. Marcus Webb", "Structural Engineer"),
-    ("crew08", "Dr. Amara Diallo", "Psychologist"),
-    ("crew09", "Dr. Sofia Kowalski", "Physicist"),
-    ("crew10", "Dr. Jin-ho Park", "Robotics Engineer"),
-    ("crew11", "Dr. Elena Volkov", "Chemist"),
-    ("crew12", "Dr. Omar Hassan", "Mission Specialist"),
+    ("crew04", "Dr. Arjun Sharma", "Systems Engineer"),
+    ("crew05", "Dr. Kavya Reddy", "Biologist"),
+    ("crew06", "Dr. Aditya Iyer", "Astrobiologist"),
+    ("crew07", "Dr. Ravi Krishnan", "Structural Engineer"),
+    ("crew08", "Dr. Meera Bose", "Psychologist"),
+    ("crew09", "Dr. Ananya Patel", "Physicist"),
+    ("crew10", "Dr. Suresh Rao", "Robotics Engineer"),
+    ("crew11", "Dr. Divya Menon", "Chemist"),
+    ("crew12", "Dr. Kiran Joshi", "Mission Specialist"),
 ]
 
 ZONE_DATA = [
@@ -47,31 +47,31 @@ ZONE_DATA = [
 
 
 def seed_database(session: Session) -> None:
-    """Seed the database with initial data if empty."""
-    existing_crew = session.exec(select(Crew)).first()
-    if existing_crew:
-        return  # Already seeded
-
+    """Seed or refresh crew names; seed zones only if empty."""
     for i, (crew_id, name, role) in enumerate(CREW_DATA):
-        crew = Crew(
-            crew_id=crew_id,
-            display_name=name,
-            role=role,
-            avatar_seed=i * 7 + 13,
-            consent_share_bio=True,
-            consent_share_affect=True,
-        )
-        session.add(crew)
+        existing = session.exec(select(Crew).where(Crew.crew_id == crew_id)).first()
+        if existing:
+            existing.display_name = name
+            existing.role = role
+        else:
+            session.add(Crew(
+                crew_id=crew_id,
+                display_name=name,
+                role=role,
+                avatar_seed=i * 7 + 13,
+                consent_share_bio=True,
+                consent_share_affect=True,
+            ))
 
-    for zone_id, level, name, desc, cap in ZONE_DATA:
-        zone = Zone(
-            zone_id=zone_id,
-            level=level,
-            name=name,
-            description=desc,
-            occupancy_cap=cap,
-        )
-        session.add(zone)
+    if not session.exec(select(Zone)).first():
+        for zone_id, level, name, desc, cap in ZONE_DATA:
+            session.add(Zone(
+                zone_id=zone_id,
+                level=level,
+                name=name,
+                description=desc,
+                occupancy_cap=cap,
+            ))
 
     session.commit()
-    print("[OK] Database seeded with crew and zones")
+    print("[OK] Crew names refreshed; zones seeded if new")

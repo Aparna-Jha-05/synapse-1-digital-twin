@@ -23,6 +23,71 @@ function getAcousticColor(db: number): THREE.Color {
   return new THREE.Color().setHSL(0.6 - 0.6 * t, 0.8, 0.4);
 }
 
+function getCCTColor(cct: number): THREE.Color {
+  // Warm (2000K, orange) → cool (7500K, blue-white)
+  const t = Math.min(1, Math.max(0, (cct - 2000) / 5500));
+  return new THREE.Color().setHSL(0.08 + 0.5 * t, 0.6, 0.45 + 0.1 * t);
+}
+
+function getCohesionColor(c: number): THREE.Color {
+  // Low cohesion (red) → high cohesion (green)
+  return new THREE.Color().setHSL(0.0 + 0.33 * Math.min(1, Math.max(0, c)), 0.75, 0.42);
+}
+
+/** Shared heatmap → colour resolver for all zone types. */
+function resolveZoneColor(
+  heatmapMode: string | null,
+  zone: any,
+  cohesionCell: { cohesion: number } | undefined,
+  baseColor: THREE.Color,
+): THREE.Color {
+  switch (heatmapMode) {
+    case "Lux": return getLuxColor(zone?.lux ?? 400);
+    case "CCT": return getCCTColor(zone?.cct ?? 4000);
+    case "CO₂": return getCO2Color(zone?.co2_ppm ?? 800);
+    case "Acoustic": return getAcousticColor(zone?.db_spl ?? 45);
+    case "Cohesion": return cohesionCell ? getCohesionColor(cohesionCell.cohesion) : baseColor;
+    default: return baseColor;
+  }
+}
+
+// ─── Ambient airflow particle field (surreal life) ────────────────────────────
+function AirflowParticles({ count = 260 }: { count?: number }) {
+  const ref = useRef<THREE.Points>(null);
+  const positions = useRef<Float32Array>();
+  if (!positions.current) {
+    const arr = new Float32Array(count * 3);
+    for (let i = 0; i < count; i++) {
+      const r = 4 + Math.random() * 12;
+      const a = Math.random() * Math.PI * 2;
+      arr[i * 3] = Math.cos(a) * r;
+      arr[i * 3 + 1] = (Math.random() - 0.5) * 12;
+      arr[i * 3 + 2] = Math.sin(a) * r;
+    }
+    positions.current = arr;
+  }
+  useFrame((_, delta) => {
+    if (ref.current) {
+      ref.current.rotation.y += delta * 0.03;
+      const y = ref.current.geometry.attributes.position.array as Float32Array;
+      for (let i = 1; i < y.length; i += 3) {
+        y[i] += Math.sin(Date.now() * 0.0004 + i) * 0.004;
+      }
+      ref.current.geometry.attributes.position.needsUpdate = true;
+    }
+  });
+  return (
+    <points ref={ref}>
+      <bufferGeometry>
+        <bufferAttribute attach="attributes-position" args={[positions.current, 3]}
+          count={count} array={positions.current} itemSize={3} />
+      </bufferGeometry>
+      <pointsMaterial size={0.06} color="#38bdf8" transparent opacity={0.35}
+        depthWrite={false} blending={THREE.AdditiveBlending} />
+    </points>
+  );
+}
+
 // ─── Atrium (Hippocampal Anchor) ──────────────────────────────────────────────
 function Atrium({ onClick, selected, heatmapMode }: { onClick: () => void; selected: boolean; heatmapMode: string | null }) {
   const meshRef = useRef<THREE.Mesh>(null);
@@ -62,17 +127,14 @@ function Atrium({ onClick, selected, heatmapMode }: { onClick: () => void; selec
 }
 
 // ─── Soma Zone ────────────────────────────────────────────────────────────────
-function SomaZone({ zoneId, angle, radius, onClick, selected, heatmapMode, zone }: {
+function SomaZone({ zoneId, angle, radius, onClick, selected, heatmapMode, zone, cohesionCell }: {
   zoneId: string; angle: number; radius: number; onClick: () => void;
-  selected: boolean; heatmapMode: string | null; zone: any;
+  selected: boolean; heatmapMode: string | null; zone: any; cohesionCell?: { cohesion: number };
 }) {
   const x = Math.cos(angle) * radius;
   const z = Math.sin(angle) * radius;
   const baseColor = new THREE.Color(LEVEL_COLORS.SOMA);
-  const color = heatmapMode === "Lux" ? getLuxColor(zone?.lux ?? 400)
-    : heatmapMode === "CO₂" ? getCO2Color(zone?.co2_ppm ?? 800)
-    : heatmapMode === "Acoustic" ? getAcousticColor(zone?.db_spl ?? 45)
-    : baseColor;
+  const color = resolveZoneColor(heatmapMode, zone, cohesionCell, baseColor);
 
   return (
     <group position={[x, -3, z]} onClick={onClick}>
@@ -88,16 +150,14 @@ function SomaZone({ zoneId, angle, radius, onClick, selected, heatmapMode, zone 
 }
 
 // ─── Axon Zone ────────────────────────────────────────────────────────────────
-function AxonZone({ zoneId, angle, radius, onClick, selected, heatmapMode, zone }: {
+function AxonZone({ zoneId, angle, radius, onClick, selected, heatmapMode, zone, cohesionCell }: {
   zoneId: string; angle: number; radius: number; onClick: () => void;
-  selected: boolean; heatmapMode: string | null; zone: any;
+  selected: boolean; heatmapMode: string | null; zone: any; cohesionCell?: { cohesion: number };
 }) {
   const x = Math.cos(angle) * radius;
   const z = Math.sin(angle) * radius;
   const baseColor = new THREE.Color(LEVEL_COLORS.AXON);
-  const color = heatmapMode === "Lux" ? getLuxColor(zone?.lux ?? 400)
-    : heatmapMode === "CO₂" ? getCO2Color(zone?.co2_ppm ?? 800)
-    : baseColor;
+  const color = resolveZoneColor(heatmapMode, zone, cohesionCell, baseColor);
 
   return (
     <group position={[x, 0, z]} onClick={onClick}>
@@ -113,16 +173,14 @@ function AxonZone({ zoneId, angle, radius, onClick, selected, heatmapMode, zone 
 }
 
 // ─── Dendrite Pod ─────────────────────────────────────────────────────────────
-function DendritePod({ zoneId, podNum, angle, radius, onClick, selected, heatmapMode, zone }: {
+function DendritePod({ zoneId, podNum, angle, radius, onClick, selected, heatmapMode, zone, cohesionCell }: {
   zoneId: string; podNum: number; angle: number; radius: number; onClick: () => void;
-  selected: boolean; heatmapMode: string | null; zone: any;
+  selected: boolean; heatmapMode: string | null; zone: any; cohesionCell?: { cohesion: number };
 }) {
   const x = Math.cos(angle) * radius;
   const z = Math.sin(angle) * radius;
   const baseColor = new THREE.Color(LEVEL_COLORS.DENDRITE);
-  const color = heatmapMode === "Lux" ? getLuxColor(zone?.lux ?? 400)
-    : heatmapMode === "Acoustic" ? getAcousticColor(zone?.db_spl ?? 35)
-    : baseColor;
+  const color = resolveZoneColor(heatmapMode, zone, cohesionCell, baseColor);
 
   return (
     <group position={[x, 3.5, z]} onClick={onClick}>
@@ -143,11 +201,12 @@ function DendritePod({ zoneId, podNum, angle, radius, onClick, selected, heatmap
 }
 
 // ─── Scene ────────────────────────────────────────────────────────────────────
-function HabitatScene({ selectedZone, onSelectZone, cameraPreset, heatmapMode }: {
+function HabitatScene({ selectedZone, onSelectZone, cameraPreset, heatmapMode, cohesion }: {
   selectedZone: string | null;
   onSelectZone: (id: string | null) => void;
   cameraPreset: string;
   heatmapMode: string | null;
+  cohesion?: Record<string, { cohesion: number }>;
 }) {
   const { zones } = useHabitatStore();
   const { camera } = useThree();
@@ -193,18 +252,23 @@ function HabitatScene({ selectedZone, onSelectZone, cameraPreset, heatmapMode }:
       <Atrium onClick={() => onSelectZone(selectedZone === "zone_atrium" ? null : "zone_atrium")}
         selected={selectedZone === "zone_atrium"} heatmapMode={heatmapMode} />
 
+      {/* Ambient airflow field */}
+      <AirflowParticles />
+
       {/* Soma zones */}
       {somaZones.filter(id => id !== "zone_atrium").map((id, i) => (
         <SomaZone key={id} zoneId={id} angle={(i / 3) * Math.PI * 2} radius={6}
           onClick={() => onSelectZone(selectedZone === id ? null : id)}
-          selected={selectedZone === id} heatmapMode={heatmapMode} zone={zones[id]} />
+          selected={selectedZone === id} heatmapMode={heatmapMode} zone={zones[id]}
+          cohesionCell={cohesion?.[id]} />
       ))}
 
       {/* Axon zones */}
       {axonZones.map((id, i) => (
         <AxonZone key={id} zoneId={id} angle={(i / 4) * Math.PI * 2 + Math.PI / 4} radius={9}
           onClick={() => onSelectZone(selectedZone === id ? null : id)}
-          selected={selectedZone === id} heatmapMode={heatmapMode} zone={zones[id]} />
+          selected={selectedZone === id} heatmapMode={heatmapMode} zone={zones[id]}
+          cohesionCell={cohesion?.[id]} />
       ))}
 
       {/* Dendrite pods */}
@@ -212,7 +276,8 @@ function HabitatScene({ selectedZone, onSelectZone, cameraPreset, heatmapMode }:
         <DendritePod key={id} zoneId={id} podNum={i + 1}
           angle={(i / 12) * Math.PI * 2} radius={12}
           onClick={() => onSelectZone(selectedZone === id ? null : id)}
-          selected={selectedZone === id} heatmapMode={heatmapMode} zone={zones[id]} />
+          selected={selectedZone === id} heatmapMode={heatmapMode} zone={zones[id]}
+          cohesionCell={cohesion?.[id]} />
       ))}
 
       {/* Connector lines from atrium */}
@@ -237,11 +302,12 @@ function HabitatScene({ selectedZone, onSelectZone, cameraPreset, heatmapMode }:
 }
 
 // ─── Main Component ───────────────────────────────────────────────────────────
-export default function HabitatViewer3D({ selectedZone, onSelectZone, cameraPreset, heatmapMode }: {
+export default function HabitatViewer3D({ selectedZone, onSelectZone, cameraPreset, heatmapMode, cohesion }: {
   selectedZone: string | null;
   onSelectZone: (id: string | null) => void;
   cameraPreset: string;
   heatmapMode: string | null;
+  cohesion?: Record<string, { cohesion: number }>;
 }) {
   return (
     <div className="w-full h-full bg-background">
@@ -250,7 +316,7 @@ export default function HabitatViewer3D({ selectedZone, onSelectZone, cameraPres
         <fog attach="fog" args={["#030712", 30, 80]} />
         <Suspense fallback={null}>
           <HabitatScene selectedZone={selectedZone} onSelectZone={onSelectZone}
-            cameraPreset={cameraPreset} heatmapMode={heatmapMode} />
+            cameraPreset={cameraPreset} heatmapMode={heatmapMode} cohesion={cohesion} />
         </Suspense>
       </Canvas>
     </div>
