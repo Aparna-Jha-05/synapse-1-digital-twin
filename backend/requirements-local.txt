@@ -1,0 +1,7 @@
+# Full local / Docker stack: the Vercel-safe base PLUS the pieces that only
+# make sense on a persistent host — the ASGI server, WebSocket support, and
+# PyTorch (used by both the trained affect MLP at inference and ml/train_affect.py).
+-r requirements.txt
+uvicorn[standard]==0.30.1
+websockets==12.0
+torch

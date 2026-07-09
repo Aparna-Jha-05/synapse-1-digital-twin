@@ -22,9 +22,13 @@ all under an explicit, auditable ethics contract.
 
 ```bash
 cd backend
-py -3 -m pip install -r requirements.txt
+py -3 -m pip install -r requirements-local.txt
 py -3 -m uvicorn main:app --host 127.0.0.1 --port 8000 --reload
 ```
+
+> `requirements-local.txt` is the full stack (uvicorn, WebSockets, PyTorch).
+> The plain `requirements.txt` is a torch-free subset used for the Vercel
+> serverless build — see [Deployment](#deployment).
 
 Backend ready at: http://127.0.0.1:8000
 
@@ -178,8 +182,8 @@ tradeoffs of doing it this way are documented below.
 1. Import the repo as a **second** Vercel project, **Root Directory** = `backend`.
 2. Deploy — no extra config needed. `backend/vercel.json` routes all paths to
    `backend/api/index.py`, which imports the existing `main.py` FastAPI `app`
-   unchanged. `backend/api/requirements.txt` is a trimmed dependency set
-   Vercel's Python builder picks up automatically for that function.
+   unchanged. Vercel's Python builder installs `backend/requirements.txt` — the
+   torch-free base set (the full stack lives in `requirements-local.txt`).
 
 **What had to change to make a stateful FastAPI app deployable as serverless
 functions, and what you give up on the free tier:**
@@ -187,8 +191,8 @@ functions, and what you give up on the free tier:**
 | Constraint | What changed |
 |---|---|
 | No persistent process → no long-lived WebSockets | `/ws/env` and `/ws/bio/{id}` are unused by the frontend now; everything polls REST endpoints instead (`/habitat/zones` every 2s, `/crew` every 3s, a new `/crew/{id}/bio-live` every 2s for a crew member's own view). Slightly less smooth than a true push stream, functionally equivalent. |
-| Vercel's ~250MB function size limit | `torch` (and unused `scikit-learn`) are excluded from `backend/api/requirements.txt`. The affect estimator already has a documented, interpretable **rule-based fallback** for when PyTorch isn't installed — the Model Card page (`/ground/model-card`) shows a live banner reporting which inference path (`mlp` vs `rule_based`) this specific deployment is actually running, so nothing is silently misrepresented. |
-| Ephemeral filesystem / no shared memory across instances | SQLite and in-memory caches (crew consent, ethics ledger, chromotherapy overrides) may occasionally reset across cold starts or when Vercel routes to a different instance. **Accepted as a known limitation of the free tier** — fine for demoing, not for a real deployment. Move the backend to a persistent host (Render/Railway/Fly, using the unmodified `backend/requirements.txt` + `Dockerfile`) when you're ready to pay, and this limitation goes away entirely — nothing else needs to change. |
+| Vercel's ~250MB function size limit | `torch` is kept out of `backend/requirements.txt` (its Linux wheel pulls ~4GB of CUDA libs); the full stack lives in `requirements-local.txt`. The affect estimator already has a documented, interpretable **rule-based fallback** for when PyTorch isn't installed — the Model Card page (`/ground/model-card`) shows a live banner reporting which inference path (`mlp` vs `rule_based`) this specific deployment is actually running, so nothing is silently misrepresented. |
+| Ephemeral filesystem / no shared memory across instances | SQLite lives in `/tmp` on Vercel (the only writable path) and in-memory caches (crew consent, ethics ledger, chromotherapy overrides) may reset across cold starts or when Vercel routes to a different instance. **Accepted as a known limitation of the free tier** — fine for demoing, not for a real deployment. Move the backend to a persistent host (Render/Railway/Fly, using `requirements-local.txt` + `Dockerfile`) when you're ready to pay, and this goes away — nothing else needs to change. |
 
 CORS currently allows all origins for the demo; lock this down to your
 frontend's domain for a real deployment.
