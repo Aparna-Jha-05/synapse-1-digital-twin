@@ -1,45 +1,38 @@
 "use client";
 
-import { useRef, useState, useEffect, Suspense } from "react";
-import { Canvas, useFrame, useThree } from "@react-three/fiber";
-import { OrbitControls, Text, Html, Line, Sphere, Box, Cylinder, PerspectiveCamera } from "@react-three/drei";
+import { useRef, useState, useEffect, useMemo, Suspense } from "react";
+import { Canvas, useFrame } from "@react-three/fiber";
+import {
+  OrbitControls, Html, Float, Line, RoundedBox,
+  Environment, Lightformer, ContactShadows,
+} from "@react-three/drei";
 import * as THREE from "three";
 import { useHabitatStore } from "@/lib/store";
 import { LEVEL_COLORS } from "@/lib/types";
 
-// ─── Zone Colors ─────────────────────────────────────────────────────────────
+// ─── Heatmap colour resolvers ─────────────────────────────────────────────────
 function getLuxColor(lux: number): THREE.Color {
   const t = Math.min(1, lux / 800);
-  return new THREE.Color().setHSL(0.17 * t, 0.8, 0.3 + 0.4 * t);
+  return new THREE.Color().setHSL(0.14 * t + 0.03, 0.85, 0.35 + 0.35 * t);
 }
-
 function getCO2Color(ppm: number): THREE.Color {
   const t = Math.min(1, Math.max(0, (ppm - 400) / 1600));
-  return new THREE.Color().setHSL(0.33 - 0.33 * t, 0.7, 0.4);
+  return new THREE.Color().setHSL(0.33 - 0.33 * t, 0.8, 0.45);
 }
-
 function getAcousticColor(db: number): THREE.Color {
   const t = Math.min(1, Math.max(0, (db - 30) / 50));
-  return new THREE.Color().setHSL(0.6 - 0.6 * t, 0.8, 0.4);
+  return new THREE.Color().setHSL(0.6 - 0.6 * t, 0.85, 0.5);
 }
-
 function getCCTColor(cct: number): THREE.Color {
-  // Warm (2000K, orange) → cool (7500K, blue-white)
   const t = Math.min(1, Math.max(0, (cct - 2000) / 5500));
-  return new THREE.Color().setHSL(0.08 + 0.5 * t, 0.6, 0.45 + 0.1 * t);
+  return new THREE.Color().setHSL(0.08 + 0.5 * t, 0.7, 0.5 + 0.08 * t);
 }
-
 function getCohesionColor(c: number): THREE.Color {
-  // Low cohesion (red) → high cohesion (green)
-  return new THREE.Color().setHSL(0.0 + 0.33 * Math.min(1, Math.max(0, c)), 0.75, 0.42);
+  return new THREE.Color().setHSL(0.33 * Math.min(1, Math.max(0, c)), 0.8, 0.48);
 }
-
-/** Shared heatmap → colour resolver for all zone types. */
 function resolveZoneColor(
-  heatmapMode: string | null,
-  zone: any,
-  cohesionCell: { cohesion: number } | undefined,
-  baseColor: THREE.Color,
+  heatmapMode: string | null, zone: any,
+  cohesionCell: { cohesion: number } | undefined, baseColor: THREE.Color,
 ): THREE.Color {
   switch (heatmapMode) {
     case "Lux": return getLuxColor(zone?.lux ?? 400);
@@ -51,74 +44,112 @@ function resolveZoneColor(
   }
 }
 
-// ─── Ambient airflow particle field (surreal life) ────────────────────────────
-function AirflowParticles({ count = 260 }: { count?: number }) {
-  const ref = useRef<THREE.Points>(null);
-  const positions = useRef<Float32Array>();
-  if (!positions.current) {
-    const arr = new Float32Array(count * 3);
-    for (let i = 0; i < count; i++) {
-      const r = 4 + Math.random() * 12;
-      const a = Math.random() * Math.PI * 2;
-      arr[i * 3] = Math.cos(a) * r;
-      arr[i * 3 + 1] = (Math.random() - 0.5) * 12;
-      arr[i * 3 + 2] = Math.sin(a) * r;
-    }
-    positions.current = arr;
-  }
-  useFrame((_, delta) => {
-    if (ref.current) {
-      ref.current.rotation.y += delta * 0.03;
-      const y = ref.current.geometry.attributes.position.array as Float32Array;
-      for (let i = 1; i < y.length; i += 3) {
-        y[i] += Math.sin(Date.now() * 0.0004 + i) * 0.004;
-      }
-      ref.current.geometry.attributes.position.needsUpdate = true;
-    }
-  });
-  return (
-    <points ref={ref}>
-      <bufferGeometry>
-        <bufferAttribute attach="attributes-position" args={[positions.current, 3]}
-          count={count} array={positions.current} itemSize={3} />
-      </bufferGeometry>
-      <pointsMaterial size={0.06} color="#38bdf8" transparent opacity={0.35}
-        depthWrite={false} blending={THREE.AdditiveBlending} />
-    </points>
-  );
+// ─── Fresnel rim-glow material (holographic edge) ─────────────────────────────
+const FRESNEL_VERT = `
+varying vec3 vNormalW;
+varying vec3 vViewDir;
+void main() {
+  vec4 wp = modelMatrix * vec4(position, 1.0);
+  vNormalW = normalize(mat3(modelMatrix) * normal);
+  vViewDir = normalize(cameraPosition - wp.xyz);
+  gl_Position = projectionMatrix * viewMatrix * wp;
+}`;
+const FRESNEL_FRAG = `
+uniform vec3 uColor;
+uniform float uPower;
+uniform float uIntensity;
+varying vec3 vNormalW;
+varying vec3 vViewDir;
+void main() {
+  float f = pow(1.0 - abs(dot(normalize(vNormalW), normalize(vViewDir))), uPower);
+  gl_FragColor = vec4(uColor * uIntensity, f);
+}`;
+
+function FresnelMat({ color, power = 2.6, intensity = 1.0 }: { color: THREE.ColorRepresentation; power?: number; intensity?: number }) {
+  const mat = useMemo(() => new THREE.ShaderMaterial({
+    vertexShader: FRESNEL_VERT, fragmentShader: FRESNEL_FRAG,
+    uniforms: { uColor: { value: new THREE.Color(color) }, uPower: { value: power }, uIntensity: { value: intensity } },
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide,
+  }), []);
+  (mat.uniforms.uColor.value as THREE.Color).set(color);
+  mat.uniforms.uPower.value = power;
+  mat.uniforms.uIntensity.value = intensity;
+  return <primitive object={mat} attach="material" />;
 }
 
-// ─── Atrium (Hippocampal Anchor) ──────────────────────────────────────────────
-function Atrium({ onClick, selected, heatmapMode }: { onClick: () => void; selected: boolean; heatmapMode: string | null }) {
-  const meshRef = useRef<THREE.Mesh>(null);
-  useFrame((_, delta) => {
-    if (meshRef.current) {
-      meshRef.current.rotation.y += delta * 0.2;
+// ─── Soft radial sprite texture (halos / floor glow) ──────────────────────────
+function useGlowTexture() {
+  return useMemo(() => {
+    const c = document.createElement("canvas");
+    c.width = c.height = 256;
+    const ctx = c.getContext("2d")!;
+    const g = ctx.createRadialGradient(128, 128, 0, 128, 128, 128);
+    g.addColorStop(0, "rgba(255,255,255,1)");
+    g.addColorStop(0.4, "rgba(255,255,255,0.25)");
+    g.addColorStop(1, "rgba(255,255,255,0)");
+    ctx.fillStyle = g; ctx.fillRect(0, 0, 256, 256);
+    return new THREE.CanvasTexture(c);
+  }, []);
+}
+
+// ─── Central Neuro-Core spire (Hippocampal Anchor) ────────────────────────────
+function CoreSpire({ selected, onClick }: { selected: boolean; onClick: () => void }) {
+  const ringsRef = useRef<THREE.Group>(null);
+  const beaconRef = useRef<THREE.Mesh>(null);
+  const glow = useGlowTexture();
+
+  useFrame((state, delta) => {
+    if (ringsRef.current) ringsRef.current.rotation.y += delta * 0.4;
+    if (beaconRef.current) {
+      const p = 0.5 + 0.5 * Math.sin(state.clock.elapsedTime * 2);
+      (beaconRef.current.material as THREE.MeshStandardMaterial).emissiveIntensity = 1.5 + p * 1.5;
+      beaconRef.current.scale.setScalar(0.9 + p * 0.15);
     }
   });
 
   return (
-    <group position={[0, 0, 0]} onClick={onClick}>
-      {/* Vertical atrium shaft */}
-      <Cylinder ref={meshRef} args={[1.5, 1.5, 8, 16, 1, true]} rotation={[0, 0, 0]}>
-        <meshStandardMaterial color={selected ? "#06b6d4" : "#0e7490"} transparent opacity={0.3}
-          wireframe={false} side={THREE.DoubleSide} />
-      </Cylinder>
-      {/* Inner glow */}
-      <Cylinder args={[0.8, 0.8, 8, 8, 1, true]}>
-        <meshStandardMaterial color="#06b6d4" transparent opacity={0.15} emissive="#06b6d4" emissiveIntensity={0.5} />
-      </Cylinder>
-      {/* Label */}
-      <Text position={[0, 5, 0]} fontSize={0.35} color="#06b6d4" anchorX="center" anchorY="bottom">
-        HIPPOCAMPAL ANCHOR
-      </Text>
-      <Text position={[0, 4.5, 0]} fontSize={0.25} color="#0e7490" anchorX="center" anchorY="bottom">
-        Central Atrium
-      </Text>
+    <group onClick={(e) => { e.stopPropagation(); onClick(); }}>
+      {/* Outer glass shell */}
+      <mesh>
+        <cylinderGeometry args={[1.15, 1.4, 12, 40, 1, true]} />
+        <meshStandardMaterial color="#0e7490" transparent opacity={0.12} side={THREE.DoubleSide}
+          metalness={0.4} roughness={0.1} />
+      </mesh>
+      {/* Fresnel edge */}
+      <mesh>
+        <cylinderGeometry args={[1.15, 1.4, 12, 40, 1, true]} />
+        <FresnelMat color={selected ? "#67e8f9" : "#22d3ee"} power={2.2} intensity={selected ? 1.5 : 1.0} />
+      </mesh>
+      {/* Bright inner core */}
+      <mesh>
+        <cylinderGeometry args={[0.35, 0.45, 11.6, 24]} />
+        <meshStandardMaterial color="#a5f3fc" emissive="#22d3ee" emissiveIntensity={2.2} toneMapped={false} />
+      </mesh>
+      {/* Pulsing energy rings climbing the core */}
+      <group ref={ringsRef}>
+        {[-4, -2, 0, 2, 4].map((y, i) => (
+          <mesh key={i} position={[0, y, 0]} rotation={[Math.PI / 2, 0, 0]}>
+            <torusGeometry args={[1.5 + (i % 2) * 0.15, 0.03, 8, 48]} />
+            <meshStandardMaterial color="#22d3ee" emissive="#22d3ee" emissiveIntensity={1.6} toneMapped={false} transparent opacity={0.9} />
+          </mesh>
+        ))}
+      </group>
+      {/* Top beacon node */}
+      <mesh ref={beaconRef} position={[0, 6.4, 0]}>
+        <icosahedronGeometry args={[0.55, 2]} />
+        <meshStandardMaterial color="#cffafe" emissive="#38bdf8" emissiveIntensity={2.5} toneMapped={false} />
+      </mesh>
+      <sprite position={[0, 6.4, 0]} scale={[4, 4, 1]}>
+        <spriteMaterial map={glow} color="#38bdf8" transparent opacity={0.5} depthWrite={false} blending={THREE.AdditiveBlending} />
+      </sprite>
+      {/* Base glow */}
+      <sprite position={[0, -6, 0]} scale={[6, 6, 1]}>
+        <spriteMaterial map={glow} color="#0891b2" transparent opacity={0.4} depthWrite={false} blending={THREE.AdditiveBlending} />
+      </sprite>
       {selected && (
-        <Html position={[2, 0, 0]}>
-          <div className="bg-surface/90 border border-accent/40 rounded-lg px-3 py-2 text-xs text-accent">
-            zone_atrium · SPECIAL
+        <Html position={[1.8, 6.4, 0]} distanceFactor={16} pointerEvents="none">
+          <div className="whitespace-nowrap rounded-md border border-cyan-400/40 bg-slate-950/85 px-2 py-1 text-[11px] font-medium text-cyan-300 shadow-lg">
+            Hippocampal Anchor · Central Atrium
           </div>
         </Html>
       )}
@@ -126,182 +157,300 @@ function Atrium({ onClick, selected, heatmapMode }: { onClick: () => void; selec
   );
 }
 
-// ─── Soma Zone ────────────────────────────────────────────────────────────────
-function SomaZone({ zoneId, angle, radius, onClick, selected, heatmapMode, zone, cohesionCell }: {
-  zoneId: string; angle: number; radius: number; onClick: () => void;
-  selected: boolean; heatmapMode: string | null; zone: any; cohesionCell?: { cohesion: number };
-}) {
-  const x = Math.cos(angle) * radius;
-  const z = Math.sin(angle) * radius;
-  const baseColor = new THREE.Color(LEVEL_COLORS.SOMA);
-  const color = resolveZoneColor(heatmapMode, zone, cohesionCell, baseColor);
-
+// ─── Structural ring (torus per level) ────────────────────────────────────────
+function LevelRing({ y, radius, color }: { y: number; radius: number; color: string }) {
   return (
-    <group position={[x, -3, z]} onClick={onClick}>
-      <Box args={[2.5, 2, 2.5]} castShadow>
-        <meshStandardMaterial color={selected ? "#c4b5fd" : color} transparent opacity={0.8}
-          emissive={selected ? "#7c3aed" : "#4c1d95"} emissiveIntensity={selected ? 0.4 : 0.1} />
-      </Box>
-      <Text position={[0, 1.3, 0]} fontSize={0.25} color="#a78bfa" anchorX="center">
-        {zone?.name?.replace(/^(Soma\s)/i, "").slice(0, 16) ?? zoneId}
-      </Text>
-    </group>
+    <mesh position={[0, y, 0]} rotation={[Math.PI / 2, 0, 0]}>
+      <torusGeometry args={[radius, 0.05, 10, 96]} />
+      <meshStandardMaterial color={color} emissive={color} emissiveIntensity={0.5} transparent opacity={0.55} toneMapped={false} />
+    </mesh>
   );
 }
 
-// ─── Axon Zone ────────────────────────────────────────────────────────────────
-function AxonZone({ zoneId, angle, radius, onClick, selected, heatmapMode, zone, cohesionCell }: {
-  zoneId: string; angle: number; radius: number; onClick: () => void;
-  selected: boolean; heatmapMode: string | null; zone: any; cohesionCell?: { cohesion: number };
+// ─── Glowing neural connective tube (core → module) ───────────────────────────
+function NeuralTube({ to, color }: { to: [number, number, number]; color: string }) {
+  const points = useMemo(() => {
+    const from = new THREE.Vector3(0, to[1] * 0.5, 0);
+    const end = new THREE.Vector3(...to);
+    const mid = from.clone().lerp(end, 0.5).add(new THREE.Vector3(0, 0.6, 0));
+    return new THREE.QuadraticBezierCurve3(from, mid, end).getPoints(24).map((p) => [p.x, p.y, p.z] as [number, number, number]);
+  }, [to]);
+  return <Line points={points} color={color} lineWidth={1.2} transparent opacity={0.35} />;
+}
+
+// ─── Soma / Axon module ───────────────────────────────────────────────────────
+function ZoneModule({
+  zoneId, level, position, size, onClick, selected, heatmapMode, zone, cohesionCell, label,
+}: {
+  zoneId: string; level: "SOMA" | "AXON"; position: [number, number, number];
+  size: [number, number, number]; onClick: () => void; selected: boolean;
+  heatmapMode: string | null; zone: any; cohesionCell?: { cohesion: number }; label: string;
 }) {
-  const x = Math.cos(angle) * radius;
-  const z = Math.sin(angle) * radius;
-  const baseColor = new THREE.Color(LEVEL_COLORS.AXON);
-  const color = resolveZoneColor(heatmapMode, zone, cohesionCell, baseColor);
+  const [hovered, setHovered] = useState(false);
+  const accent = LEVEL_COLORS[level];
+  const base = new THREE.Color(accent);
+  const color = resolveZoneColor(heatmapMode, zone, cohesionCell, base);
+  const active = selected || hovered;
+  const glow = useGlowTexture();
+
+  useEffect(() => {
+    document.body.style.cursor = hovered ? "pointer" : "auto";
+    return () => { document.body.style.cursor = "auto"; };
+  }, [hovered]);
 
   return (
-    <group position={[x, 0, z]} onClick={onClick}>
-      <Box args={[2.2, 1.8, 2.2]} castShadow>
-        <meshStandardMaterial color={selected ? "#6ee7b7" : color} transparent opacity={0.75}
-          emissive={selected ? "#065f46" : "#022c22"} emissiveIntensity={selected ? 0.4 : 0.1} />
-      </Box>
-      <Text position={[0, 1.1, 0]} fontSize={0.22} color="#34d399" anchorX="center">
-        {zone?.name?.slice(0, 16) ?? zoneId}
-      </Text>
-    </group>
+    <Float speed={2} rotationIntensity={0} floatIntensity={0.35} floatingRange={[-0.05, 0.05]}>
+      <group position={position}
+        onClick={(e) => { e.stopPropagation(); onClick(); }}
+        onPointerOver={(e) => { e.stopPropagation(); setHovered(true); }}
+        onPointerOut={() => setHovered(false)}>
+        {/* Body */}
+        <RoundedBox args={size} radius={0.14} smoothness={4}>
+          <meshStandardMaterial color={color} metalness={0.55} roughness={0.28}
+            emissive={color} emissiveIntensity={active ? 0.5 : 0.16}
+            transparent opacity={0.92} />
+        </RoundedBox>
+        {/* Fresnel rim */}
+        <mesh scale={1.015}>
+          <boxGeometry args={size} />
+          <FresnelMat color={accent} power={2.4} intensity={active ? 1.6 : 0.9} />
+        </mesh>
+        {/* Emissive base strip */}
+        <mesh position={[0, -size[1] / 2 - 0.02, 0]}>
+          <boxGeometry args={[size[0] * 0.85, 0.05, size[2] * 0.85]} />
+          <meshStandardMaterial color={accent} emissive={accent} emissiveIntensity={1.8} toneMapped={false} />
+        </mesh>
+        {active && (
+          <sprite scale={[size[0] * 2.4, size[1] * 2.4, 1]}>
+            <spriteMaterial map={glow} color={accent} transparent opacity={0.35} depthWrite={false} blending={THREE.AdditiveBlending} />
+          </sprite>
+        )}
+        {active && (
+          <Html position={[0, size[1] / 2 + 0.35, 0]} center distanceFactor={15} pointerEvents="none">
+            <div className="whitespace-nowrap rounded-md border px-2 py-1 text-[11px] font-medium shadow-lg"
+              style={{ borderColor: `${accent}66`, background: "rgba(2,6,23,0.85)", color: accent }}>
+              {label}
+            </div>
+          </Html>
+        )}
+      </group>
+    </Float>
   );
 }
 
-// ─── Dendrite Pod ─────────────────────────────────────────────────────────────
-function DendritePod({ zoneId, podNum, angle, radius, onClick, selected, heatmapMode, zone, cohesionCell }: {
-  zoneId: string; podNum: number; angle: number; radius: number; onClick: () => void;
-  selected: boolean; heatmapMode: string | null; zone: any; cohesionCell?: { cohesion: number };
+// ─── Dendrite sleep pod ───────────────────────────────────────────────────────
+function DendritePod({
+  zoneId, podNum, position, onClick, selected, heatmapMode, zone, cohesionCell,
+}: {
+  zoneId: string; podNum: number; position: [number, number, number];
+  onClick: () => void; selected: boolean; heatmapMode: string | null;
+  zone: any; cohesionCell?: { cohesion: number };
 }) {
-  const x = Math.cos(angle) * radius;
-  const z = Math.sin(angle) * radius;
-  const baseColor = new THREE.Color(LEVEL_COLORS.DENDRITE);
-  const color = resolveZoneColor(heatmapMode, zone, cohesionCell, baseColor);
+  const [hovered, setHovered] = useState(false);
+  const accent = LEVEL_COLORS.DENDRITE;
+  const base = new THREE.Color(accent);
+  const color = resolveZoneColor(heatmapMode, zone, cohesionCell, base);
+  const active = selected || hovered;
+
+  useEffect(() => {
+    document.body.style.cursor = hovered ? "pointer" : "auto";
+    return () => { document.body.style.cursor = "auto"; };
+  }, [hovered]);
 
   return (
-    <group position={[x, 3.5, z]} onClick={onClick}>
-      {/* Pod body */}
-      <Box args={[1.5, 1.8, 1.5]}>
-        <meshStandardMaterial color={selected ? "#93c5fd" : color} transparent opacity={0.85}
-          emissive={selected ? "#1e40af" : "#1e3a5f"} emissiveIntensity={selected ? 0.6 : 0.15} />
-      </Box>
-      {/* Water shield ring */}
-      <Cylinder args={[1.1, 1.1, 1.8, 8, 1, true]}>
-        <meshStandardMaterial color="#0ea5e9" transparent opacity={0.15} />
-      </Cylinder>
-      <Text position={[0, 1.2, 0]} fontSize={0.22} color="#60a5fa" anchorX="center">
-        Pod {String(podNum).padStart(2, "0")}
-      </Text>
+    <Float speed={2.5} rotationIntensity={0} floatIntensity={0.3} floatingRange={[-0.04, 0.04]}>
+      <group position={position}
+        onClick={(e) => { e.stopPropagation(); onClick(); }}
+        onPointerOver={(e) => { e.stopPropagation(); setHovered(true); }}
+        onPointerOut={() => setHovered(false)}>
+        {/* Pod capsule */}
+        <mesh rotation={[0, 0, Math.PI / 2]}>
+          <capsuleGeometry args={[0.62, 0.7, 8, 20]} />
+          <meshStandardMaterial color={color} metalness={0.5} roughness={0.22}
+            emissive={color} emissiveIntensity={active ? 0.55 : 0.18} transparent opacity={0.9} />
+        </mesh>
+        {/* Fresnel rim */}
+        <mesh rotation={[0, 0, Math.PI / 2]} scale={1.03}>
+          <capsuleGeometry args={[0.62, 0.7, 8, 20]} />
+          <FresnelMat color={accent} power={2.5} intensity={active ? 1.7 : 0.9} />
+        </mesh>
+        {/* Water-shield torus */}
+        <mesh rotation={[Math.PI / 2, 0, 0]}>
+          <torusGeometry args={[0.95, 0.12, 12, 32]} />
+          <meshStandardMaterial color="#0ea5e9" emissive="#0284c7" emissiveIntensity={0.6}
+            metalness={0.2} roughness={0.1} transparent opacity={0.35} />
+        </mesh>
+        {active && (
+          <Html position={[0, 1.2, 0]} center distanceFactor={15} pointerEvents="none">
+            <div className="whitespace-nowrap rounded-md border px-2 py-1 text-[11px] font-medium shadow-lg"
+              style={{ borderColor: `${accent}66`, background: "rgba(2,6,23,0.85)", color: accent }}>
+              Pod {String(podNum).padStart(2, "0")}
+            </div>
+          </Html>
+        )}
+      </group>
+    </Float>
+  );
+}
+
+// ─── Ambient drifting motes ───────────────────────────────────────────────────
+function Motes({ count = 220 }: { count?: number }) {
+  const ref = useRef<THREE.Points>(null);
+  const positions = useMemo(() => {
+    const arr = new Float32Array(count * 3);
+    for (let i = 0; i < count; i++) {
+      const r = 3 + Math.random() * 13, a = Math.random() * Math.PI * 2;
+      arr[i * 3] = Math.cos(a) * r;
+      arr[i * 3 + 1] = (Math.random() - 0.5) * 14;
+      arr[i * 3 + 2] = Math.sin(a) * r;
+    }
+    return arr;
+  }, [count]);
+  useFrame((_, delta) => { if (ref.current) ref.current.rotation.y += delta * 0.02; });
+  return (
+    <points ref={ref}>
+      <bufferGeometry>
+        <bufferAttribute attach="attributes-position" args={[positions, 3]} count={count} array={positions} itemSize={3} />
+      </bufferGeometry>
+      <pointsMaterial size={0.05} color="#7dd3fc" transparent opacity={0.5} depthWrite={false} blending={THREE.AdditiveBlending} sizeAttenuation />
+    </points>
+  );
+}
+
+// ─── Floor: radial glow disc + contact shadows ────────────────────────────────
+function Floor() {
+  const glow = useGlowTexture();
+  return (
+    <group position={[0, -6.2, 0]}>
+      <mesh rotation={[-Math.PI / 2, 0, 0]}>
+        <circleGeometry args={[22, 64]} />
+        <meshBasicMaterial map={glow} color="#0e7490" transparent opacity={0.5} depthWrite={false} blending={THREE.AdditiveBlending} />
+      </mesh>
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.01, 0]}>
+        <ringGeometry args={[15.6, 16, 96]} />
+        <meshBasicMaterial color="#155e75" transparent opacity={0.5} side={THREE.DoubleSide} />
+      </mesh>
+      <ContactShadows position={[0, 0.02, 0]} opacity={0.5} blur={2.6} scale={40} far={12} color="#000000" />
     </group>
   );
 }
 
 // ─── Scene ────────────────────────────────────────────────────────────────────
-function HabitatScene({ selectedZone, onSelectZone, cameraPreset, heatmapMode, cohesion }: {
+function HabitatScene({ selectedZone, onSelectZone, cameraPreset, heatmapMode, cohesion, zones }: {
   selectedZone: string | null;
   onSelectZone: (id: string | null) => void;
   cameraPreset: string;
   heatmapMode: string | null;
   cohesion?: Record<string, { cohesion: number }>;
+  zones: Record<string, any>;
 }) {
-  const { zones } = useHabitatStore();
-  const { camera } = useThree();
   const controlsRef = useRef<any>(null);
+
+  const somaZones = ["zone_soma_galley", "zone_soma_hearth", "zone_soma_common"];
+  const axonZones = ["zone_axon_lab_a", "zone_axon_lab_b", "zone_axon_aeroponics", "zone_axon_gallery"];
+  const dendriteZones = Array.from({ length: 12 }, (_, i) => `zone_dendrite_pod_${String(i + 1).padStart(2, "0")}`);
+
+  const SOMA_Y = -3.4, SOMA_R = 6.5;
+  const AXON_Y = 0.2, AXON_R = 9;
+  const DEND_Y = 3.8, DEND_R = 12;
+
+  const somaPos = (i: number): [number, number, number] => {
+    const a = (i / somaZones.length) * Math.PI * 2;
+    return [Math.cos(a) * SOMA_R, SOMA_Y, Math.sin(a) * SOMA_R];
+  };
+  const axonPos = (i: number): [number, number, number] => {
+    const a = (i / axonZones.length) * Math.PI * 2 + Math.PI / 4;
+    return [Math.cos(a) * AXON_R, AXON_Y, Math.sin(a) * AXON_R];
+  };
+  const dendPos = (i: number): [number, number, number] => {
+    const a = (i / dendriteZones.length) * Math.PI * 2;
+    return [Math.cos(a) * DEND_R, DEND_Y, Math.sin(a) * DEND_R];
+  };
 
   // Camera presets
   useEffect(() => {
     const positions: Record<string, [number, number, number]> = {
-      Overview: [18, 14, 18],
-      Cutaway: [20, 2, 0],
-      "Soma Ring": [0, -8, 16],
-      "Dendrite Grid": [0, 12, 14],
-      "Atrium Below": [0, -10, 0.1],
+      Overview: [17, 11, 17], Cutaway: [22, 3, 0], "Soma Ring": [0, -7, 15],
+      "Dendrite Grid": [0, 15, 15], "Atrium Below": [0, -11, 0.1],
     };
     const targets: Record<string, [number, number, number]> = {
-      Overview: [0, 0, 0],
-      Cutaway: [0, 0, 0],
-      "Soma Ring": [0, -3, 0],
-      "Dendrite Grid": [0, 3, 0],
-      "Atrium Below": [0, 0, 0],
+      Overview: [0, 0, 0], Cutaway: [0, 0, 0], "Soma Ring": [0, -3, 0],
+      "Dendrite Grid": [0, 3, 0], "Atrium Below": [0, 0, 0],
     };
     const pos = positions[cameraPreset] ?? positions.Overview;
     const tgt = targets[cameraPreset] ?? [0, 0, 0];
-    camera.position.set(...pos);
     if (controlsRef.current) {
+      controlsRef.current.object.position.set(...pos);
       controlsRef.current.target.set(...tgt);
       controlsRef.current.update();
     }
   }, [cameraPreset]);
 
-  const somaZones = ["zone_atrium", "zone_soma_galley", "zone_soma_hearth", "zone_soma_common"];
-  const axonZones = ["zone_axon_lab_a", "zone_axon_lab_b", "zone_axon_aeroponics", "zone_axon_gallery"];
-  const dendriteZones = Array.from({ length: 12 }, (_, i) => `zone_dendrite_pod_${String(i + 1).padStart(2, "0")}`);
-
   return (
     <>
-      <ambientLight intensity={0.3} />
-      <pointLight position={[0, 8, 0]} intensity={1.5} color="#06b6d4" />
-      <pointLight position={[10, 0, 10]} intensity={0.5} color="#a78bfa" />
-      <pointLight position={[-10, 0, -10]} intensity={0.5} color="#34d399" />
+      {/* Lighting */}
+      <ambientLight intensity={0.35} />
+      <hemisphereLight args={["#67e8f9", "#0b1220", 0.5]} />
+      <pointLight position={[0, 6, 0]} intensity={30} color="#22d3ee" distance={40} decay={1.6} />
+      <directionalLight position={[10, 14, 8]} intensity={0.7} color="#e0f2fe" />
+      <Environment resolution={128} frames={1}>
+        <Lightformer form="ring" intensity={2} color="#22d3ee" scale={8} position={[0, 6, 0]} rotation={[Math.PI / 2, 0, 0]} />
+        <Lightformer form="rect" intensity={1.2} color="#a78bfa" scale={10} position={[-10, 2, -6]} />
+        <Lightformer form="rect" intensity={1.2} color="#34d399" scale={10} position={[10, 2, 6]} />
+        <Lightformer form="rect" intensity={0.8} color="#38bdf8" scale={12} position={[0, -8, 0]} rotation={[Math.PI / 2, 0, 0]} />
+      </Environment>
 
-      {/* Atrium */}
-      <Atrium onClick={() => onSelectZone(selectedZone === "zone_atrium" ? null : "zone_atrium")}
-        selected={selectedZone === "zone_atrium"} heatmapMode={heatmapMode} />
+      {/* Deselect on empty-space click */}
+      <mesh position={[0, 0, 0]} scale={60} visible={false} onClick={() => onSelectZone(null)}>
+        <sphereGeometry args={[1, 8, 8]} />
+        <meshBasicMaterial side={THREE.BackSide} />
+      </mesh>
 
-      {/* Ambient airflow field */}
-      <AirflowParticles />
+      <CoreSpire selected={selectedZone === "zone_atrium"}
+        onClick={() => onSelectZone(selectedZone === "zone_atrium" ? null : "zone_atrium")} />
 
-      {/* Soma zones */}
-      {somaZones.filter(id => id !== "zone_atrium").map((id, i) => (
-        <SomaZone key={id} zoneId={id} angle={(i / 3) * Math.PI * 2} radius={6}
+      {/* Structural rings */}
+      <LevelRing y={SOMA_Y} radius={SOMA_R} color={LEVEL_COLORS.SOMA} />
+      <LevelRing y={AXON_Y} radius={AXON_R} color={LEVEL_COLORS.AXON} />
+      <LevelRing y={DEND_Y} radius={DEND_R} color={LEVEL_COLORS.DENDRITE} />
+
+      {/* Neural connective tubes */}
+      {somaZones.map((id, i) => <NeuralTube key={id} to={somaPos(i)} color={LEVEL_COLORS.SOMA} />)}
+      {axonZones.map((id, i) => <NeuralTube key={id} to={axonPos(i)} color={LEVEL_COLORS.AXON} />)}
+      {dendriteZones.map((id, i) => <NeuralTube key={id} to={dendPos(i)} color={LEVEL_COLORS.DENDRITE} />)}
+
+      {/* Soma modules */}
+      {somaZones.map((id, i) => (
+        <ZoneModule key={id} zoneId={id} level="SOMA" position={somaPos(i)} size={[2.4, 1.9, 2.4]}
           onClick={() => onSelectZone(selectedZone === id ? null : id)}
-          selected={selectedZone === id} heatmapMode={heatmapMode} zone={zones[id]}
-          cohesionCell={cohesion?.[id]} />
+          selected={selectedZone === id} heatmapMode={heatmapMode} zone={zones[id]} cohesionCell={cohesion?.[id]}
+          label={zones[id]?.name ?? id.replace("zone_", "").replace(/_/g, " ")} />
       ))}
-
-      {/* Axon zones */}
+      {/* Axon modules */}
       {axonZones.map((id, i) => (
-        <AxonZone key={id} zoneId={id} angle={(i / 4) * Math.PI * 2 + Math.PI / 4} radius={9}
+        <ZoneModule key={id} zoneId={id} level="AXON" position={axonPos(i)} size={[2.1, 1.7, 2.1]}
           onClick={() => onSelectZone(selectedZone === id ? null : id)}
-          selected={selectedZone === id} heatmapMode={heatmapMode} zone={zones[id]}
-          cohesionCell={cohesion?.[id]} />
+          selected={selectedZone === id} heatmapMode={heatmapMode} zone={zones[id]} cohesionCell={cohesion?.[id]}
+          label={zones[id]?.name ?? id.replace("zone_", "").replace(/_/g, " ")} />
       ))}
-
       {/* Dendrite pods */}
       {dendriteZones.map((id, i) => (
-        <DendritePod key={id} zoneId={id} podNum={i + 1}
-          angle={(i / 12) * Math.PI * 2} radius={12}
+        <DendritePod key={id} zoneId={id} podNum={i + 1} position={dendPos(i)}
           onClick={() => onSelectZone(selectedZone === id ? null : id)}
-          selected={selectedZone === id} heatmapMode={heatmapMode} zone={zones[id]}
-          cohesionCell={cohesion?.[id]} />
+          selected={selectedZone === id} heatmapMode={heatmapMode} zone={zones[id]} cohesionCell={cohesion?.[id]} />
       ))}
 
-      {/* Connector lines from atrium */}
-      {[...somaZones.slice(1), ...axonZones].map((id, i) => {
-        const angle = id.includes("soma")
-          ? ((somaZones.indexOf(id) - 1) / 3) * Math.PI * 2
-          : (axonZones.indexOf(id) / 4) * Math.PI * 2 + Math.PI / 4;
-        const r = id.includes("soma") ? 6 : 9;
-        const y = id.includes("soma") ? -3 : 0;
-        return (
-          <Line key={id} points={[[0, 0, 0], [Math.cos(angle) * r, y, Math.sin(angle) * r]]}
-            color="#06b6d4" transparent opacity={0.15} lineWidth={1} />
-        );
-      })}
+      <Motes />
+      <Floor />
 
-      <OrbitControls ref={controlsRef} enableDamping dampingFactor={0.05} makeDefault />
-
-      {/* Floor grid */}
-      <gridHelper args={[40, 40, "#1e293b", "#0f172a"]} position={[0, -5, 0]} />
+      <OrbitControls ref={controlsRef} enableDamping dampingFactor={0.06} makeDefault
+        autoRotate={!selectedZone} autoRotateSpeed={0.35}
+        minDistance={8} maxDistance={45} enablePan={false} />
     </>
   );
 }
 
-// ─── Main Component ───────────────────────────────────────────────────────────
+// ─── Main component ───────────────────────────────────────────────────────────
 export default function HabitatViewer3D({ selectedZone, onSelectZone, cameraPreset, heatmapMode, cohesion }: {
   selectedZone: string | null;
   onSelectZone: (id: string | null) => void;
@@ -309,17 +458,18 @@ export default function HabitatViewer3D({ selectedZone, onSelectZone, cameraPres
   heatmapMode: string | null;
   cohesion?: Record<string, { cohesion: number }>;
 }) {
+  const { zones } = useHabitatStore();
   return (
-    <div className="w-full h-full bg-background">
-      <Canvas shadows camera={{ position: [18, 14, 18], fov: 55 }} gl={{ antialias: true }}>
-        <color attach="background" args={["#030712"]} />
-        <fog attach="fog" args={["#030712", 30, 80]} />
+    <div className="w-full h-full" style={{ background: "radial-gradient(ellipse at 50% 40%, #0a1424 0%, #05070f 70%)" }}>
+      <Canvas shadows dpr={[1, 2]} camera={{ position: [17, 11, 17], fov: 50 }}
+        gl={{ antialias: true, toneMapping: THREE.ACESFilmicToneMapping, toneMappingExposure: 1.15 }}>
+        <color attach="background" args={["#05070f"]} />
+        <fog attach="fog" args={["#05070f", 26, 68]} />
         <Suspense fallback={null}>
           <HabitatScene selectedZone={selectedZone} onSelectZone={onSelectZone}
-            cameraPreset={cameraPreset} heatmapMode={heatmapMode} cohesion={cohesion} />
+            cameraPreset={cameraPreset} heatmapMode={heatmapMode} cohesion={cohesion} zones={zones} />
         </Suspense>
       </Canvas>
     </div>
   );
 }
-
