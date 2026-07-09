@@ -110,13 +110,15 @@ def rule_based_affect(features: np.ndarray) -> dict:
     valence = 0.3 + 0.8 * hrv_norm - 0.7 * sleep_norm - 0.3 * eda_norm + 0.2 * phase_sin
     valence = max(-1.0, min(1.0, valence))
 
-    # Feature attributions (simplified SHAP)
+    # Feature attributions (simplified SHAP). Cast to native float — these
+    # are numpy.float32 scalars (from the float32 feature vector) and are
+    # not JSON-serializable by FastAPI's default encoder otherwise.
     top_features = {
-        "hrv_rmssd": round(0.8 * hrv_norm - 0.4, 3),
-        "eda": round(-0.8 * eda_norm + 0.2, 3),
-        "sleep_debt": round(-0.7 * sleep_norm, 3),
-        "heart_rate": round(1.0 * hr_norm - 0.5, 3),
-        "lf_hf_ratio": round(0.4 * lf_hf - 0.2, 3),
+        "hrv_rmssd": round(float(0.8 * hrv_norm - 0.4), 3),
+        "eda": round(float(-0.8 * eda_norm + 0.2), 3),
+        "sleep_debt": round(float(-0.7 * sleep_norm), 3),
+        "heart_rate": round(float(1.0 * hr_norm - 0.5), 3),
+        "lf_hf_ratio": round(float(0.4 * lf_hf - 0.2), 3),
     }
 
     return {

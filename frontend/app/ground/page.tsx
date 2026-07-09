@@ -2,9 +2,8 @@
 
 import { useEffect, useState, useCallback } from "react";
 import dynamic from "next/dynamic";
-import { useAuthStore, useHabitatStore, useBiometricsStore, useCrewStore, useUIStore } from "@/lib/store";
+import { useAuthStore, useCrewStore, useUIStore } from "@/lib/store";
 import { getAllCrew, getShieldIntegrity, getAllSMIs, getCommsStatus, injectScenario, getEthicsLog, getFriction } from "@/lib/api";
-import { createEnvWS, createBioWS } from "@/lib/api";
 import { getCircadianDebtColor, getMoodWeather } from "@/lib/utils";
 import type { Crew, ShieldIntegrity, CommsStatus, EthicsLogEntry, FrictionPair } from "@/lib/types";
 import Link from "next/link";
@@ -284,8 +283,6 @@ export default function GroundDashboard() {
   const [alerts, setAlerts] = useState<Array<{ id: string; msg: string; type: string }>>([]);
   const [selectedZone, setSelectedZone] = useState<string | null>(null);
   const [heatmapMode, setHeatmapMode] = useState<string | null>("Lux");
-  const { updateEnvBatch } = useHabitatStore();
-  const { updateBio, setPrivacyBlocked } = useBiometricsStore();
 
   const fetchData = useCallback(async () => {
     if (!token) return;
@@ -317,35 +314,13 @@ export default function GroundDashboard() {
     } catch (e) {}
   }, [token]);
 
+  // Crew roster (incl. live bio/circadian/affect) + habitat vitals — polling
+  // replaces the old per-crew WebSocket streams (12 sockets + env stream).
   useEffect(() => {
     fetchData();
-    const id = setInterval(fetchData, 5000);
+    const id = setInterval(fetchData, 3000);
     return () => clearInterval(id);
   }, [fetchData]);
-
-  // WebSocket for env
-  useEffect(() => {
-    if (!token) return;
-    const ws = createEnvWS(token, (msg: any) => {
-      if (msg.type === "env_update") {
-        updateEnvBatch(msg.data);
-      }
-    });
-    return () => ws.close();
-  }, [token]);
-
-  // WebSockets for all crew bio
-  useEffect(() => {
-    if (!token) return;
-    const sockets = Array.from({ length: 12 }, (_, i) => {
-      const crewId = `crew${String(i + 1).padStart(2, "0")}`;
-      return createBioWS(crewId, token, (msg: any) => {
-        if (msg.type === "bio_update") updateBio(msg.crew_id, msg.data);
-        if (msg.type === "blocked") setPrivacyBlocked(crewId, true);
-      });
-    });
-    return () => sockets.forEach((s) => s.close());
-  }, [token]);
 
   const smiAlarms = Object.entries(smis).filter(([, v]) => v.alarm);
 

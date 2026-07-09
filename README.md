@@ -120,7 +120,7 @@ spar/
 | **Explainable friction model** | `/ground` (server-side) | Additive attribution over circadian debt, sleep debt, affect divergence, shared zone |
 | **Per-zone cohesion heatmap** | `/ground/habitat` | Grounded in crew affect valence + spread (previously a stub) |
 | Kronauer circadian oscillator | `backend/ml/circadian` | Van der Pol limit-cycle, per-crew phase |
-| WebSocket bio + env streams | `/ws/env`, `/ws/bio/{id}` | 2 Hz env, 1 Hz bio, consent-gated |
+| Live bio + env polling | `/habitat/zones`, `/crew`, `/crew/{id}/bio-live` | 2–3s polling, consent-gated. (`/ws/env`, `/ws/bio/{id}` still exist for WebSocket-capable hosts, unused by this frontend.) |
 | Hash-chained ethics ledger | `/ground/ethics` | Every actuation + twin run logged and verifiable |
 | Sensory Monotony Index (SMI) | `/ground` | Variance-based habituation alarm |
 | Comms Latency Theatre / ISRU queue | `/ground/comms` | Earth-link latency, regolith brick curing |
@@ -161,34 +161,39 @@ Validation metrics (see the in-app Model Card): **R² ≈ 0.88 (arousal) / 0.94
 
 ## Deployment
 
-The app is split: **Vercel hosts the Next.js frontend**, and the FastAPI backend
-runs on a persistent host (e.g. **Render**), because the backend uses
-WebSockets, long-lived background tasks, and in-memory state that Vercel's
-serverless model does not support.
+Frontend and backend deploy as **two separate Vercel projects** from this one
+repo, each with its own **Root Directory**. This works today for free — the
+tradeoffs of doing it this way are documented below.
 
 ### Frontend → Vercel
 
 1. Import the repo in Vercel and set **Root Directory** to `frontend`.
 2. Add an environment variable:
-   - `NEXT_PUBLIC_API_URL` = the deployed backend URL (e.g. `https://synapse-1-backend.onrender.com`)
+   - `NEXT_PUBLIC_API_URL` = the deployed backend URL (e.g. `https://synapse-1-backend.vercel.app`)
 3. Deploy. `frontend/vercel.json` pins the framework and, importantly, the
    install command (`npm install --legacy-peer-deps`) this project requires.
 
-> `NEXT_PUBLIC_API_URL` must use `https://` in production; the frontend derives
-> the WebSocket URL from it automatically (`wss://`).
+### Backend → Vercel (free tier)
 
-### Backend → Render (or any container/VM host)
+1. Import the repo as a **second** Vercel project, **Root Directory** = `backend`.
+2. Deploy — no extra config needed. `backend/vercel.json` routes all paths to
+   `backend/api/index.py`, which imports the existing `main.py` FastAPI `app`
+   unchanged. `backend/api/requirements.txt` is a trimmed dependency set
+   Vercel's Python builder picks up automatically for that function.
 
-```bash
-cd backend
-pip install -r requirements.txt
-uvicorn main:app --host 0.0.0.0 --port $PORT
-```
+**What had to change to make a stateful FastAPI app deployable as serverless
+functions, and what you give up on the free tier:**
 
-A `Dockerfile` is provided in `backend/`. CORS currently allows all origins for
-the demo; lock this down to your Vercel domain for production.
+| Constraint | What changed |
+|---|---|
+| No persistent process → no long-lived WebSockets | `/ws/env` and `/ws/bio/{id}` are unused by the frontend now; everything polls REST endpoints instead (`/habitat/zones` every 2s, `/crew` every 3s, a new `/crew/{id}/bio-live` every 2s for a crew member's own view). Slightly less smooth than a true push stream, functionally equivalent. |
+| Vercel's ~250MB function size limit | `torch` (and unused `scikit-learn`) are excluded from `backend/api/requirements.txt`. The affect estimator already has a documented, interpretable **rule-based fallback** for when PyTorch isn't installed — the Model Card page (`/ground/model-card`) shows a live banner reporting which inference path (`mlp` vs `rule_based`) this specific deployment is actually running, so nothing is silently misrepresented. |
+| Ephemeral filesystem / no shared memory across instances | SQLite and in-memory caches (crew consent, ethics ledger, chromotherapy overrides) may occasionally reset across cold starts or when Vercel routes to a different instance. **Accepted as a known limitation of the free tier** — fine for demoing, not for a real deployment. Move the backend to a persistent host (Render/Railway/Fly, using the unmodified `backend/requirements.txt` + `Dockerfile`) when you're ready to pay, and this limitation goes away entirely — nothing else needs to change. |
 
-### Local Docker (both services)
+CORS currently allows all origins for the demo; lock this down to your
+frontend's domain for a real deployment.
+
+### Local Docker (both services, full stack incl. trained MLP)
 
 ```bash
 docker compose up

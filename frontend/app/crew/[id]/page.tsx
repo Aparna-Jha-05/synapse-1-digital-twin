@@ -2,8 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useAuthStore } from "@/lib/store";
-import { getCrewCircadian, getCrewAffect, getCommsStatus, setChromotherapy, triggerPrivacyPause, getCircadianForecast } from "@/lib/api";
-import { createBioWS } from "@/lib/api";
+import { getCrewCircadian, getCrewAffect, getCommsStatus, setChromotherapy, triggerPrivacyPause, getCircadianForecast, getCrewBioLive } from "@/lib/api";
 import { getMoodWeather, getCircadianDebtColor } from "@/lib/utils";
 import type { CircadianState, AffectEstimate, CommsStatus, BioSample, CircadianForecastPoint } from "@/lib/types";
 import { CHROMOTHERAPY_PRESETS } from "@/lib/types";
@@ -207,12 +206,19 @@ export default function CrewHomePage({ params }: { params: { id: string } }) {
     return () => clearInterval(id);
   }, [token, crewId]);
 
+  // Live biometrics — polling replaces the old /ws/bio/{crewId} stream.
   useEffect(() => {
     if (!token) return;
-    const ws = createBioWS(crewId, token, (msg: any) => {
-      if (msg.type === "bio_update") setBio(msg.data);
-    });
-    return () => ws.close();
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const res = await getCrewBioLive(crewId);
+        if (!cancelled && !res.blocked) setBio(res.data);
+      } catch {}
+    };
+    load();
+    const id = setInterval(load, 2000);
+    return () => { cancelled = true; clearInterval(id); };
   }, [token, crewId]);
 
   const handleChromotherapy = async (preset: string) => {

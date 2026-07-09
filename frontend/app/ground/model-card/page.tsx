@@ -66,6 +66,24 @@ export default function ModelCardPage() {
         <StatTile label="MAE · Valence" value={m.val_mae_valence.toFixed(3)} sub="mean abs error" color="#fbbf24" />
       </div>
 
+      {/* Live inference transparency */}
+      <div className={`border rounded-xl px-4 py-2.5 text-xs flex items-center gap-2 ${
+        card.live_inference_method === "mlp"
+          ? "border-success/25 bg-success/5 text-success"
+          : "border-warning/25 bg-warning/5 text-warning"
+      }`}>
+        <span className="w-1.5 h-1.5 rounded-full bg-current shrink-0" />
+        {card.live_inference_method === "mlp" ? (
+          <span>This deployment is running the <strong>trained MLP</strong> above for live affect estimates.</span>
+        ) : (
+          <span>
+            This deployment is serving live affect estimates from the <strong>interpretable rule-based fallback</strong>
+            {" "}(PyTorch unavailable in this environment — e.g. the free serverless tier). The metrics above describe
+            the trained artifact in the repo, not this instance&rsquo;s live inference path.
+          </span>
+        )}
+      </div>
+
       <div className="grid grid-cols-12 gap-4">
         {/* Training curve */}
         <div className="col-span-7 border border-surface-2 rounded-xl p-4 bg-surface/50">

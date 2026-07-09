@@ -464,12 +464,13 @@ def crew_friction(session: Session = Depends(get_session), user: dict = Depends(
 @app.get("/ml/model-card")
 def ml_model_card(user: dict = Depends(get_current_user)):
     """Affect-model provenance + real training metrics for the Model Card page."""
-    from ml.affect.regressor import load_model_card
+    from ml.affect.regressor import load_model_card, HAS_TORCH
     card = load_model_card()
+    live_method = "mlp" if HAS_TORCH else "rule_based"
     if not card:
         return {"available": False, "reason": "not_trained",
-                "hint": "Run: py -3 ml/train_affect.py"}
-    return {"available": True, **card}
+                "hint": "Run: py -3 ml/train_affect.py", "live_inference_method": live_method}
+    return {"available": True, "live_inference_method": live_method, **card}
 
 
 # ─── Scenarios ───────────────────────────────────────────────────────────────
@@ -712,6 +713,36 @@ async def ws_bio(websocket: WebSocket, crew_id: str, token: str = Query(...)):
             await asyncio.sleep(1.0)
     except WebSocketDisconnect:
         pass
+
+
+# ─── Polling: Biometric sample (WebSocket alternative) ────────────────────────
+@app.get("/crew/{crew_id}/bio-live")
+def bio_live(
+    crew_id: str,
+    session: Session = Depends(get_session),
+    user: dict = Depends(get_current_user),
+):
+    """
+    Polling equivalent of /ws/bio/{crew_id} for hosts that can't hold a
+    WebSocket open (e.g. serverless). Same consent enforcement as the WS route.
+    """
+    if user["role"] == "CREW" and user["crew_id"] != crew_id:
+        raise HTTPException(403, "Access denied")
+
+    crew_obj = session.get(Crew, crew_id)
+    if not crew_obj:
+        raise HTTPException(404, "Crew not found")
+
+    if user["role"] == "GROUND":
+        if not crew_obj.consent_share_bio:
+            return {"crew_id": crew_id, "blocked": True, "reason": "consent_not_given"}
+        if crew_obj.consent_paused_until and datetime.utcnow() < crew_obj.consent_paused_until:
+            return {"crew_id": crew_id, "blocked": True, "reason": "sharing_paused",
+                    "paused_until": crew_obj.consent_paused_until.isoformat()}
+
+    sample = generate_bio_sample(crew_id, time.time())
+    _bio_cache[crew_id] = sample
+    return {"crew_id": crew_id, "blocked": False, "data": sample}
 
 
 # ─── Background: Update circadian + affect states ────────────────────────────

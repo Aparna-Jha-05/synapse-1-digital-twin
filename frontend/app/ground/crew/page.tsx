@@ -3,7 +3,6 @@
 import { useEffect, useState } from "react";
 import { useAuthStore } from "@/lib/store";
 import { getAllCrew, getCircadianForecast } from "@/lib/api";
-import { createBioWS } from "@/lib/api";
 import { getCircadianDebtColor, getMoodWeather } from "@/lib/utils";
 import type { Crew, CircadianForecastPoint } from "@/lib/types";
 import { LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip } from "recharts";
@@ -35,10 +34,10 @@ function CircadianRingMini({ phase, debt, diameter = 80 }: { phase: number; debt
   );
 }
 
-function CrewDetailCard({ crew, bioLive }: { crew: Crew; bioLive?: Record<string, any> }) {
+function CrewDetailCard({ crew }: { crew: Crew }) {
   const [forecast, setForecast] = useState<CircadianForecastPoint[]>([]);
   const { token } = useAuthStore();
-  const bio = bioLive?.[crew.crew_id] || crew.bio;
+  const bio = crew.bio;
   const circ = crew.circadian;
   const affect = crew.affect;
 
@@ -77,7 +76,7 @@ function CrewDetailCard({ crew, bioLive }: { crew: Crew; bioLive?: Record<string
               { label: "HRV", value: bio?.hrv_rmssd?.toFixed(0) ?? "–", unit: "ms", color: "text-accent" },
               { label: "HR", value: bio?.hr?.toFixed(0) ?? "–", unit: "bpm", color: "text-accent" },
               { label: "EDA", value: bio?.eda?.toFixed(2) ?? "–", unit: "µS", color: "text-accent" },
-              { label: "Sleep Debt", value: bio?.sleep_debt?.toFixed(1) ?? "–", unit: "h", color: bio?.sleep_debt > 3 ? "text-warning" : "text-accent" },
+              { label: "Sleep Debt", value: bio?.sleep_debt?.toFixed(1) ?? "–", unit: "h", color: (bio?.sleep_debt ?? 0) > 3 ? "text-warning" : "text-accent" },
             ].map((m) => (
               <div key={m.label} className="bg-surface-2 rounded-lg p-2 text-center">
                 <div className="data-label mb-1">{m.label}</div>
@@ -140,26 +139,15 @@ function CrewDetailCard({ crew, bioLive }: { crew: Crew; bioLive?: Record<string
 export default function CrewPage() {
   const { token } = useAuthStore();
   const [crew, setCrew] = useState<Crew[]>([]);
-  const [bioLive, setBioLive] = useState<Record<string, any>>({});
 
+  // Polling (was: 5s poll + 12 redundant bio WebSockets — getAllCrew already
+  // returns live bio for every crew member, so one faster poll covers both).
   useEffect(() => {
     if (!token) return;
-    getAllCrew().then(setCrew).catch(() => {});
-    const id = setInterval(() => getAllCrew().then(setCrew).catch(() => {}), 5000);
+    const load = () => getAllCrew().then(setCrew).catch(() => {});
+    load();
+    const id = setInterval(load, 3000);
     return () => clearInterval(id);
-  }, [token]);
-
-  useEffect(() => {
-    if (!token) return;
-    const sockets = Array.from({ length: 12 }, (_, i) => {
-      const crewId = `crew${String(i + 1).padStart(2, "0")}`;
-      return createBioWS(crewId, token, (msg: any) => {
-        if (msg.type === "bio_update") {
-          setBioLive(prev => ({ ...prev, [msg.crew_id]: msg.data }));
-        }
-      });
-    });
-    return () => sockets.forEach(s => s.close());
   }, [token]);
 
   return (
@@ -172,7 +160,7 @@ export default function CrewPage() {
       </div>
       <div className="grid grid-cols-3 gap-4">
         {crew.map(c => (
-          <CrewDetailCard key={c.crew_id} crew={c} bioLive={bioLive} />
+          <CrewDetailCard key={c.crew_id} crew={c} />
         ))}
       </div>
     </div>

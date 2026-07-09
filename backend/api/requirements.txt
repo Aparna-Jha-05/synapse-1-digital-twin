@@ -1,0 +1,19 @@
+# Trimmed dependency set for the Vercel serverless deployment.
+# torch and scikit-learn are intentionally excluded here: torch's CPU wheel
+# alone is well over Vercel's function size limit, and scikit-learn is unused
+# by this codebase. The affect estimator (backend/ml/affect/regressor.py)
+# already has a documented, interpretable rule-based fallback for when
+# PyTorch isn't installed (HAS_TORCH == False) — see /ml/model-card's
+# `live_inference_method` field, which reports which path is active.
+#
+# This file lives in api/ so Vercel's Python builder picks it up for the
+# api/index.py function specifically, instead of backend/requirements.txt
+# (which stays the full set, used for local dev / Docker / a persistent host).
+fastapi==0.111.0
+sqlmodel==0.0.19
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+python-multipart==0.0.9
+numpy==1.26.4
+noise==1.2.2
+python-dotenv==1.0.1

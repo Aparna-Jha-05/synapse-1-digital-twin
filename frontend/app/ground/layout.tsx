@@ -2,8 +2,9 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { useAuthStore } from "@/lib/store";
+import { useAuthStore, useHabitatStore } from "@/lib/store";
 import { formatMissionClock } from "@/lib/utils";
+import { getZones } from "@/lib/api";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
@@ -23,6 +24,7 @@ export default function GroundLayout({ children }: { children: React.ReactNode }
   const router = useRouter();
   const pathname = usePathname();
   const { token, role, logout, hydrate } = useAuthStore();
+  const { updateEnvBatch } = useHabitatStore();
   const [clock, setClock] = useState("");
   const [missionSec, setMissionSec] = useState(0);
 
@@ -37,6 +39,24 @@ export default function GroundLayout({ children }: { children: React.ReactNode }
     if (!token) {
       router.push("/login?role=ground");
     }
+  }, [token, role]);
+
+  // Habitat env polling — replaces the old /ws/env stream. Shared across all
+  // /ground/* pages so any nested page can read useHabitatStore().zones
+  // without needing to run its own fetch first.
+  useEffect(() => {
+    if (!token || role !== "GROUND") return;
+    const load = async () => {
+      try {
+        const zones = await getZones();
+        const batch: Record<string, any> = {};
+        for (const z of zones) batch[z.zone_id] = z;
+        updateEnvBatch(batch);
+      } catch {}
+    };
+    load();
+    const id = setInterval(load, 2000);
+    return () => clearInterval(id);
   }, [token, role]);
 
   useEffect(() => {
